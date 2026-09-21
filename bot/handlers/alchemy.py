@@ -37,7 +37,6 @@ async def pick_second_slot(callback: CallbackQuery):
     buttons = []
     
     for ing_id, count in materials.items():
-        # ИСПРАВЛЕНИЕ: Теперь нельзя выбрать тот же самый ингредиент
         if ing_id in all_ing and ing_id != ing1_id and count > 0:
             buttons.append([InlineKeyboardButton(text=f"Смешать с: {all_ing[ing_id]['name']}", callback_data=f"alch:mix:{ing1_id}:{ing_id}")])
             
@@ -48,32 +47,31 @@ async def pick_second_slot(callback: CallbackQuery):
 async def brew_potion(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     _, _, ing1, ing2 = callback.data.split(":")
-    
-    if ing1 == ing2:
-        return await callback.answer("Ошибка: нельзя смешать ингредиент сам с собой!", show_alert=True)
+    if ing1 == ing2: return await callback.answer("Нельзя смешать ингредиент сам с собой!", show_alert=True)
         
     inv = user['inventory']
     materials = inv.get("materials", {})
-    
-    if materials.get(ing1, 0) < 1 or materials.get(ing2, 0) < 1:
-        return await callback.answer("Недостаточно ингредиентов!", show_alert=True)
+    if materials.get(ing1, 0) < 1 or materials.get(ing2, 0) < 1: return await callback.answer("Недостаточно трав!", show_alert=True)
         
-    materials[ing1] -= 1
-    materials[ing2] -= 1
+    materials[ing1] -= 1; materials[ing2] -= 1
     
     all_ing = get_all_ingredients()
-    common_traits = set(all_ing[ing1]["traits"]).intersection(set(all_ing[ing2]["traits"]))
+    common_traits = list(set(all_ing[ing1]["traits"]).intersection(set(all_ing[ing2]["traits"])))
+    
     known = user.get("known_traits", {})
     known.setdefault(ing1, []); known.setdefault(ing2, [])
     
     if common_traits:
-        trait = list(common_traits)[0]
-        if trait not in known[ing1]: known[ing1].append(trait)
-        if trait not in known[ing2]: known[ing2].append(trait)
-        inv.setdefault("potions", []).append(f"Зелье: {trait}")
-        result_msg = f"✨ Успех! Создано: [Зелье: {trait}]!"
+        for trait in common_traits:
+            if trait not in known[ing1]: known[ing1].append(trait)
+            if trait not in known[ing2]: known[ing2].append(trait)
+            
+        trait_str = ", ".join(common_traits)
+        potion_name = f"Зелье: {trait_str}"
+        inv.setdefault("potions", []).append(potion_name)
+        result_msg = f"✨ Невероятный успех! Создано сложное: **[{potion_name}]**!"
     else:
-        result_msg = "💀 Свойства не совпали. Ингредиенты испорчены."
+        result_msg = "💀 Свойства не совпали. Ингредиенты превратились в едкий дым."
     
     inv["materials"] = materials
     update_user(user['user_id'], known_traits=known, inventory=inv)

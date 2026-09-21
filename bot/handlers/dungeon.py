@@ -45,7 +45,7 @@ async def enter_dungeon(callback: CallbackQuery):
     dungeon_data = generate_dungeon_graph(dungeon_type)
     dungeon_data["gathered_gold"] = 0
     dungeon_data["gathered_materials"] = {}
-    dungeon_data["gathered_equipment"] = [] # ТРЕКИНГ ЭКИПИРОВКИ ДЛЯ ПОТЕРИ ПРИ СМЕРТИ
+    dungeon_data["gathered_equipment"] = []
     
     update_user(callback.from_user.id, state='STATE_DUNGEON', dungeon_data=dungeon_data)
     config = get_dungeon_config(dungeon_type)
@@ -158,11 +158,26 @@ async def solve_puzzle(callback: CallbackQuery):
             update_user(user['user_id'], state='STATE_DUNGEON', hp=user['hp']-dmg, combat_data={})
             await callback.message.edit_text(f"❌ **Ошибка!** Урон: {dmg}!\nСмотрим карту...", reply_markup=get_navigation_kb(dungeon_data), parse_mode="Markdown")
 
+# НОВАЯ СИСТЕМА ПОДТВЕРЖДЕНИЯ ПОБЕГА
 @router.callback_query(F.data == "dungeon_flee")
 async def flee_dungeon(callback: CallbackQuery):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏃‍♂️ ДА, СБЕЖАТЬ", callback_data="dungeon_flee_confirm")],
+        [InlineKeyboardButton(text="🗺️ НЕТ, ИДЕМ ДАЛЬШЕ", callback_data="dungeon_flee_cancel")]
+    ])
+    await callback.message.edit_text("⚠️ **Вы уверены?**\nПри побеге вы потеряете часть золота и материалов из этого рейда!", reply_markup=kb, parse_mode="Markdown")
+
+@router.callback_query(F.data == "dungeon_flee_confirm")
+async def flee_dungeon_confirm(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
-    lost_gold, lost_mats = apply_flee_penalty(callback.from_user.id, user.get('dungeon_data', {}))
-    update_user(callback.from_user.id, state='STATE_TOWN', combat_data={}, dungeon_data={})
+    lost_gold, lost_mats = apply_flee_penalty(user['user_id'], user.get('dungeon_data', {}))
+    update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
     from handlers.town import get_town_kb
     mats_str = f" и {', '.join(lost_mats)}" if lost_mats else ""
     await callback.message.edit_text(f"🏃‍♂️ Вы сбежали! Потеряно из рейда: **{lost_gold} золота**{mats_str}.", reply_markup=get_town_kb(), parse_mode="Markdown")
+
+@router.callback_query(F.data == "dungeon_flee_cancel")
+async def flee_dungeon_cancel(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
+    dungeon_data = user.get('dungeon_data', {})
+    await callback.message.edit_text("Вы передумали бежать.\n\nКуда дальше?", reply_markup=get_navigation_kb(dungeon_data), parse_mode="Markdown")

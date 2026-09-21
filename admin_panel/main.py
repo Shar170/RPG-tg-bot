@@ -81,7 +81,7 @@ with tab1:
             c_g1, c_g2, c_xp = st.columns(3)
             new_gold_min = c_g1.number_input("Золото Min", value=int(mob.get('gold_min', 5)))
             new_gold_max = c_g2.number_input("Золото Max", value=int(mob.get('gold_max', 15)))
-            new_xp = c_xp.number_input("Опыт (XP)", value=int(mob.get('xp_reward', 10)))
+            new_mob_xp = c_xp.number_input("Опыт (XP)", value=int(mob.get('xp_reward', 10)))
             
             st.markdown("### 🧬 Навыки (0.0 - 1.0)")
             sc1, sc2, sc3 = st.columns(3)
@@ -97,10 +97,12 @@ with tab1:
             if st.form_submit_button("💾 Сохранить Монстра"):
                 new_skills = json.dumps({"dodge": s_dodge, "counter": s_counter, "reposition": s_repo, "poison": s_poison, "burn": s_burn, "heal": s_heal})
                 with get_conn() as conn:
+                    # Оборачиваем mob_id в str() для защиты типов
                     conn.execute("UPDATE bestiary SET hp_min=?, hp_max=?, dmg_min=?, dmg_max=?, row_pref=?, skills=?, gold_min=?, gold_max=?, xp_reward=? WHERE mob_id=?", 
-                                 (new_hp_min, new_hp_max, new_dmg_min, new_dmg_max, new_pref, new_skills, new_gold_min, new_gold_max, new_xp, mob['mob_id']))
+                                 (new_hp_min, new_hp_max, new_dmg_min, new_dmg_max, new_pref, new_skills, new_gold_min, new_gold_max, new_mob_xp, str(mob['mob_id'])))
                     conn.commit()
-                st.success("Монстр обновлен! (Нажмите F5)")
+                st.success("Монстр сохранен!")
+                st.rerun() # Мгновенное обновление страницы
 
 with tab2:
     users_df = fetch_table("users")
@@ -117,7 +119,8 @@ with tab2:
                 
                 if st.form_submit_button("Выдать в инвентарь"):
                     with get_conn() as conn:
-                        cur = conn.execute("SELECT inventory FROM users WHERE user_id=?", (user['user_id'],))
+                        # Используем int(user['user_id'])
+                        cur = conn.execute("SELECT inventory FROM users WHERE user_id=?", (int(user['user_id']),))
                         inv = json.loads(cur.fetchone()[0])
                         itype = all_items[sel_item]['type']
                         
@@ -130,21 +133,31 @@ with tab2:
                         else:
                             inv.setdefault('materials', {})[sel_item] = inv.setdefault('materials', {}).get(sel_item, 0) + qty
                             
-                        conn.execute("UPDATE users SET inventory=? WHERE user_id=?", (json.dumps(inv, ensure_ascii=False), user['user_id']))
+                        conn.execute("UPDATE users SET inventory=? WHERE user_id=?", (json.dumps(inv, ensure_ascii=False), int(user['user_id'])))
                         conn.commit()
-                    st.success(f"Выдано! Обновите страницу (F5).")
+                    st.success(f"Выдано!")
+                    st.rerun()
 
         with st.form("user_editor"):
-            col1, col2 = st.columns(2)
-            new_gold = col1.number_input("Золото", value=int(user['gold']))
-            new_gems = col2.number_input("Алмазы 💎", value=int(user.get('gems', 0)))
+            st.subheader(f"Профиль: {user['username']}")
             
-            c_hp1, c_hp2, c_lvl = st.columns(3)
-            new_hp = c_hp1.number_input("Текущее ХП", value=int(user['hp']))
-            new_max_hp = c_hp2.number_input("Макс ХП", value=int(user['max_hp']))
-            new_level = c_lvl.number_input("Уровень", value=int(user.get('level', 1)))
+            c1, c2, c3 = st.columns(3)
+            new_gold = c1.number_input("Золото 🪙", value=int(user['gold']))
+            new_gems = c2.number_input("Алмазы 💎", value=int(user.get('gems', 0)))
+            new_state = c3.text_input("Состояние (state)", value=str(user['state']))
             
-            new_state = st.text_input("Состояние (state)", value=user['state'])
+            c4, c5, c6 = st.columns(3)
+            new_hp = c4.number_input("Текущее ХП", value=int(user['hp']))
+            new_max_hp = c5.number_input("Макс ХП", value=int(user['max_hp']))
+            new_level = c6.number_input("Уровень", value=int(user.get('level', 1)))
+            
+            c7, c8, c9 = st.columns(3)
+            new_xp = c7.number_input("Опыт (XP)", value=int(user.get('xp', 0)))
+            new_clan_id = c8.number_input("ID Клана (0 = нет)", value=int(user.get('clan_id', 0)))
+            
+            current_role = user.get('clan_role', 'thrall')
+            if current_role not in ["thrall", "lindeman", "hedwing"]: current_role = "thrall"
+            new_clan_role = c9.selectbox("Роль в клане", ["thrall", "lindeman", "hedwing"], index=["thrall", "lindeman", "hedwing"].index(current_role))
             
             st.markdown("### 🎒 Прямое редактирование Инвентаря (JSON)")
             inv_str = st.text_area("JSON Инвентаря", value=json.dumps(json.loads(user['inventory']), indent=4, ensure_ascii=False), height=350)
@@ -153,15 +166,17 @@ with tab2:
                 try:
                     parsed_inv = json.loads(inv_str)
                     with get_conn() as conn:
-                        conn.execute("UPDATE users SET gold=?, gems=?, hp=?, max_hp=?, level=?, state=?, inventory=? WHERE user_id=?", 
-                                     (new_gold, new_gems, new_hp, new_max_hp, new_level, new_state, json.dumps(parsed_inv, ensure_ascii=False), user['user_id']))
+                        # Главное исправление: int(user['user_id']) вместо сырого numpy.int64
+                        conn.execute("UPDATE users SET gold=?, gems=?, hp=?, max_hp=?, level=?, xp=?, clan_id=?, clan_role=?, state=?, inventory=? WHERE user_id=?", 
+                                     (new_gold, new_gems, new_hp, new_max_hp, new_level, new_xp, new_clan_id, new_clan_role, new_state, json.dumps(parsed_inv, ensure_ascii=False), int(user['user_id'])))
                         conn.commit()
                     st.success("Игрок обновлен!")
+                    st.rerun() # Мгновенное обновление UI
                 except Exception as e:
                     st.error(f"Ошибка в JSON: {e}")
 
 with tab3:
-    pks = {"game_settings": "key", "loot_tables": "id", "items": "item_id", "daily_dungeons": "day_index", "recipes": "recipe_id"}
+    pks = {"game_settings": "key", "loot_tables": "id", "items": "item_id", "daily_dungeons": "day_index", "recipes": "recipe_id", "clans": "clan_id"}
     table_to_edit = st.selectbox("Таблица:", list(pks.keys()))
     df = fetch_table(table_to_edit)
     edited = st.data_editor(df, num_rows="dynamic", use_container_width=True, key=f"tbl_{table_to_edit}")
@@ -170,5 +185,6 @@ with tab3:
         try:
             save_simple_table(table_to_edit, df, edited, pks[table_to_edit])
             st.success("Таблица сохранена!")
+            st.rerun()
         except Exception as e:
             st.error(f"Ошибка: {e}")

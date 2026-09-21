@@ -4,11 +4,12 @@ from collections import Counter
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command, CommandObject
-from database import get_user, update_user, get_connection, get_item_price, get_item_name, check_and_generate_quests
+from database import get_user, update_user, get_connection, get_item_price, get_item_name, check_and_generate_quests, get_top_clans
 from config import DB_PATH
 
 router = Router()
 
+# Найти функцию get_town_kb() и заменить ее:
 def get_town_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚔️ Доска Рейдов", callback_data="town_raids"),
@@ -17,9 +18,22 @@ def get_town_kb():
          InlineKeyboardButton(text="🧪 Алхимия", callback_data="town_alchemy")],
         [InlineKeyboardButton(text="🔨 Мастерская", callback_data="craft_open"),
          InlineKeyboardButton(text="🏪 Торговец", callback_data="town_market")],
+        [InlineKeyboardButton(text="🍻 Таверна (Мини-игры)", callback_data="town_tavern")], # НОВОЕ
         [InlineKeyboardButton(text="🏡 Мой Дом", callback_data="town_home"),
-         InlineKeyboardButton(text="🛡️ Клан", callback_data="town_clan")]
+         InlineKeyboardButton(text="🛡️ Клан", callback_data="clan_main")]
     ])
+
+
+def render_town_text():
+    text = "🏰 **Центральный Лагерь**\n\nЗдесь безопасно. Вы можете торговать, крафтить или отправиться в рейд.\n\n"
+    top_clans = get_top_clans(3)
+    if top_clans:
+        text += "🏆 **Доска Славы (Топ Кланов Недели)**\n"
+        for i, c in enumerate(top_clans, 1):
+            text += f"{i}. 🛡️ **{c['name']}** — {c['weekly_raids']} рейдов\n"
+    else:
+        text += "🏆 **Доска Славы** пока пустует.\n"
+    return text
 
 @router.message(Command("start"))
 async def start_game(message: Message, command: CommandObject):
@@ -33,17 +47,22 @@ async def start_game(message: Message, command: CommandObject):
             cursor.execute("INSERT INTO users (user_id, username, state, hp, max_hp, gold, inventory, home_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (message.from_user.id, message.from_user.username, 'STATE_TOWN', 100, 100, 50, inv, home))
             conn.commit()
     else: update_user(message.from_user.id, state='STATE_TOWN')
-    await message.answer("🏰 **Центральный Лагерь**", reply_markup=get_town_kb(), parse_mode="Markdown")
+    await message.answer(render_town_text(), reply_markup=get_town_kb(), parse_mode="Markdown")
 
-# --- СИСТЕМА ДЕЙЛИКОВ ---
+@router.callback_query(F.data == "town_back")
+async def back_to_town(callback: CallbackQuery):
+    await callback.message.edit_text(render_town_text(), reply_markup=get_town_kb(), parse_mode="Markdown")
+
 @router.callback_query(F.data == "town_quests")
 async def open_quests(callback: CallbackQuery):
     quests_data = check_and_generate_quests(callback.from_user.id)
     quests = quests_data.get("quests", [])
     
-    text = "📜 **Ежедневные задания**\nОбновляются каждую полночь.\n\n"
+    text = ("📜 **Ежедневные задания**\n"
+            "Выполните все 3 задания, чтобы получить награду: **500 🪙 и 10 💎**\n"
+            "Обновляются каждую полночь.\n\n")
+            
     all_completed = True
-    
     for idx, q in enumerate(quests, 1):
         status = "✅ Выполнено" if q["completed"] else f"В процессе: {q['progress']}/{q['target']}"
         icon = "🟢" if q["completed"] else "⚪"
@@ -64,19 +83,14 @@ async def open_quests(callback: CallbackQuery):
 async def claim_quests_reward(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     quests_data = user.get("quests_data", {})
-    
-    if quests_data.get("claimed"):
-        return await callback.answer("Уже получено!", show_alert=True)
-        
+    if quests_data.get("claimed"): return await callback.answer("Уже получено!", show_alert=True)
     user['gold'] += 500
     user['gems'] += 10
     quests_data["claimed"] = True
-    
     update_user(user['user_id'], gold=user['gold'], gems=user['gems'], quests_data=quests_data)
     await callback.answer("Получено: 500 Золота и 10 Алмазов!", show_alert=True)
     await open_quests(callback)
 
-# --- ТОРГОВЕЦ И ОСТАЛЬНОЕ (БЕЗ ИЗМЕНЕНИЙ) ---
 @router.callback_query(F.data == "town_market")
 async def open_market(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
@@ -86,34 +100,37 @@ async def open_market(callback: CallbackQuery):
         [InlineKeyboardButton(text="📦 Скупка (Продажа)", callback_data="market_cat_sell")],
         [InlineKeyboardButton(text="🔙 В лагерь", callback_data="town_back")]
     ])
-    await callback.message.edit_text(f"🏪 **Торговец**\n💰 Золото: {user['gold']} | 💎 Алмазы: {user['gems']}", reply_markup=kb, parse_mode="Markdown")
+    await callback.message.edit_text(f"🏪 **Торговец**\n💰 Золото: **{user['gold']}** | 💎 Алмазы: **{user['gems']}**", reply_markup=kb, parse_mode="Markdown")
 
 @router.callback_query(F.data == "market_cat_consumables")
 async def market_consumables(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"🍲 Рагу ({get_item_price('ragout')} 🪙)", callback_data="market_buy_ragout")],
         [InlineKeyboardButton(text=f"🧪 Зелье ХП ({get_item_price('health_potion')} 🪙)", callback_data="market_buy_health_potion")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="town_market")]
     ])
-    await callback.message.edit_text("🏪 **Провизия**", reply_markup=kb, parse_mode="Markdown")
+    await callback.message.edit_text(f"🏪 **Провизия**\n💰 Доступно: **{user['gold']}** 🪙", reply_markup=kb, parse_mode="Markdown")
 
 @router.callback_query(F.data == "market_cat_weapons")
 async def market_weapons(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
     buttons = []
     with sqlite3.connect(DB_PATH) as conn:
         for w_id, w_name, price in conn.execute("SELECT item_id, name, base_price FROM items WHERE type='weapon' ORDER BY base_price").fetchall():
             buttons.append([InlineKeyboardButton(text=f"🗡 {w_name} ({price} 🪙)", callback_data=f"market_buye_{w_id}")])
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="town_market")])
-    await callback.message.edit_text("🏪 **Оружейня**", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
+    await callback.message.edit_text(f"🏪 **Оружейня**\n💰 Ваше золото: **{user['gold']}** 🪙", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
 
 @router.callback_query(F.data == "market_cat_armors")
 async def market_armors(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
     buttons = []
     with sqlite3.connect(DB_PATH) as conn:
         for a_id, a_name, price in conn.execute("SELECT item_id, name, base_price FROM items WHERE type='armor' ORDER BY base_price").fetchall():
             buttons.append([InlineKeyboardButton(text=f"🛡 {a_name} ({price} 🪙)", callback_data=f"market_buye_{a_id}")])
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="town_market")])
-    await callback.message.edit_text("🏪 **Бронник**", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
+    await callback.message.edit_text(f"🏪 **Бронник**\n💰 Ваше золото: **{user['gold']}** 🪙", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
 
 @router.callback_query(F.data.startswith("market_buy_"))
 async def market_buy_cons(callback: CallbackQuery):
@@ -212,14 +229,6 @@ async def market_sell_one_eq(callback: CallbackQuery):
         await callback.answer(f"Продано за {price} 🪙!")
     await market_sell_equip(callback)
 
-@router.callback_query(F.data == "town_clan")
-async def show_clan(callback: CallbackQuery):
-    await callback.message.edit_text("🛡️ **Клановый Зал**\nСкоро здесь соберутся великие гильдии.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="town_back")]]), parse_mode="Markdown")
-
 @router.callback_query(F.data == "town_home")
 async def show_home(callback: CallbackQuery):
     await callback.message.edit_text("🏡 **Мой Дом**", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="town_back")]]), parse_mode="Markdown")
-
-@router.callback_query(F.data == "town_back")
-async def back_to_town(callback: CallbackQuery):
-    await callback.message.edit_text("🏰 **Центральный Лагерь**", reply_markup=get_town_kb(), parse_mode="Markdown")

@@ -25,9 +25,10 @@ async def open_inventory(callback: CallbackQuery):
     safe_username = user['username'].replace('_', '\\_') if user['username'] else "Герой"
     xp_needed = user.get('level', 1) * 100
     
+    # ДОБАВЛЕНЫ АЛМАЗЫ
     text = (f"🎒 **Инвентарь ({safe_username})** | Уровень {user.get('level', 1)}\n"
             f"✨ Опыт: {user.get('xp', 0)} / {xp_needed}\n"
-            f"💰 Золото: {user['gold']}\n\n"
+            f"💰 Золото: {user['gold']} | 💎 Алмазы: {user.get('gems', 0)}\n\n"
             f"Оружие: **{w_name}** ({w_range})\nБроня: **{a_name}**\n\n"
             f"📊 Урон: {total_dmg} | Защита: {total_def} | ХП: {user['hp']}/{user['max_hp']}\n\n"
             f"🧪 **Расходники:**\n")
@@ -111,7 +112,6 @@ async def execute_drink(callback: CallbackQuery):
         p_name = unique_potions[idx]
         p_lower = p_name.lower()
         
-        # ЗАЩИТА: Вне боя можно пить только хилки
         if "рагу" in p_lower or "хил" in p_lower or "реген хп" in p_lower:
             user['inventory']["potions"].remove(p_name)
             heal = int(user['max_hp'] * 0.35) if "рагу" in p_lower else int(user['max_hp'] * 0.25)
