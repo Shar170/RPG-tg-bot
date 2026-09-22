@@ -93,7 +93,17 @@ async def next_room(callback: CallbackQuery):
         msg = f"💰 **Тайник!** Найдено {gold_found} золота."
         inv = user['inventory']
         
-        for loot in get_loot_table(location_id):
+        # УМНАЯ СИСТЕМА ЛУТА ДЛЯ ТАЙНИКОВ
+        loot_table = get_loot_table(location_id)
+        random.shuffle(loot_table) # Перемешиваем лут
+        
+        max_drops = random.randint(3, 5) # В тайниках от 3 до 5 предметов
+        dropped_count = 0
+        
+        for loot in loot_table:
+            if dropped_count >= max_drops:
+                break
+                
             if random.random() <= min(1.0, loot['chance'] * 2.0):
                 qty = random.randint(loot['min'], loot['max'])
                 item_db = get_item(loot['item_id'])
@@ -106,6 +116,8 @@ async def next_room(callback: CallbackQuery):
                     dungeon_data.setdefault("gathered_materials", {})
                     dungeon_data["gathered_materials"][loot['item_id']] = dungeon_data["gathered_materials"].get(loot['item_id'], 0) + qty
                 msg += f"\n📦 Внутри: **{get_item_name(loot['item_id'])}** (x{qty})"
+                dropped_count += 1
+                
         update_user(user['user_id'], gold=user['gold'], inventory=inv, dungeon_data=dungeon_data)
         await callback.message.edit_text(f"{msg}\n\nДальше...", reply_markup=get_navigation_kb(dungeon_data), parse_mode="Markdown")
         
@@ -158,7 +170,6 @@ async def solve_puzzle(callback: CallbackQuery):
             update_user(user['user_id'], state='STATE_DUNGEON', hp=user['hp']-dmg, combat_data={})
             await callback.message.edit_text(f"❌ **Ошибка!** Урон: {dmg}!\nСмотрим карту...", reply_markup=get_navigation_kb(dungeon_data), parse_mode="Markdown")
 
-# НОВАЯ СИСТЕМА ПОДТВЕРЖДЕНИЯ ПОБЕГА
 @router.callback_query(F.data == "dungeon_flee")
 async def flee_dungeon(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[

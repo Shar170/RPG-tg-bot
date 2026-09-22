@@ -3,6 +3,7 @@ import sqlite3
 import pandas as pd
 import json
 import os
+import io
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, '..', 'bot', 'game_data.db')
@@ -52,8 +53,50 @@ def get_all_items_dict():
         for a in alch: d[a[0]] = {"name": a[1], "type": "material"}
         return d
 
+# ==========================================
+# 🗄️ СКВОЗНАЯ ПАНЕЛЬ SQL ДЛЯ ВСЕХ ВКЛАДОК
+# ==========================================
+with st.sidebar:
+    st.header("⚡ SQL Консоль")
+    st.caption("Доступна во всех вкладках. Выполняет запросы к любым таблицам.")
+    
+    with st.expander("ℹ️ Список таблиц БД"):
+        with get_conn() as conn:
+            tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()]
+            st.code("\n".join(tables), language="text")
+
+    sql_query = st.text_area("SQL Запрос", height=140, placeholder="UPDATE users SET gold = gold + 500;\n-- или:\nSELECT * FROM users LIMIT 5;")
+    
+    col_run, col_clear = st.columns([1, 1])
+    run_btn = col_run.button("▶️ Выполнить", use_container_width=True)
+
+    if run_btn and sql_query.strip():
+        cleaned_query = sql_query.strip()
+        try:
+            with get_conn() as conn:
+                cursor = conn.cursor()
+                if cleaned_query.lower().startswith("select") or cleaned_query.lower().startswith("pragma"):
+                    result_df = pd.read_sql_query(cleaned_query, conn)
+                    st.success(f"Строк получено: {len(result_df)}")
+                    st.dataframe(result_df, use_container_width=True)
+                else:
+                    cursor.execute(cleaned_query)
+                    conn.commit()
+                    st.success(f"Запрос применен! Изменено строк: {cursor.rowcount}")
+                    st.rerun()
+        except Exception as e:
+            st.error(f"Ошибка SQL: {e}")
+
+# ==========================================
+# ОСНОВНОЙ ИНТЕРФЕЙС ВКЛАДОК
+# ==========================================
 st.title("🛡️ Продвинутая Админ-Панель")
-tab1, tab2, tab3 = st.tabs(["🦇 Бестиарий (Урон, Награды и Навыки)", "👥 Игроки", "📊 Таблицы БД"])
+tab1, tab2, tab3, tab4 = st.tabs([
+    "🦇 Бестиарий (Урон, Награды и Навыки)", 
+    "👥 Игроки", 
+    "📊 Таблицы БД",
+    "💾 Экспорт SQL"
+])
 
 with tab1:
     mobs_df = fetch_table("bestiary")
@@ -97,12 +140,11 @@ with tab1:
             if st.form_submit_button("💾 Сохранить Монстра"):
                 new_skills = json.dumps({"dodge": s_dodge, "counter": s_counter, "reposition": s_repo, "poison": s_poison, "burn": s_burn, "heal": s_heal})
                 with get_conn() as conn:
-                    # Оборачиваем mob_id в str() для защиты типов
                     conn.execute("UPDATE bestiary SET hp_min=?, hp_max=?, dmg_min=?, dmg_max=?, row_pref=?, skills=?, gold_min=?, gold_max=?, xp_reward=? WHERE mob_id=?", 
                                  (new_hp_min, new_hp_max, new_dmg_min, new_dmg_max, new_pref, new_skills, new_gold_min, new_gold_max, new_mob_xp, str(mob['mob_id'])))
                     conn.commit()
                 st.success("Монстр сохранен!")
-                st.rerun() # Мгновенное обновление страницы
+                st.rerun()
 
 with tab2:
     users_df = fetch_table("users")
@@ -119,7 +161,6 @@ with tab2:
                 
                 if st.form_submit_button("Выдать в инвентарь"):
                     with get_conn() as conn:
-                        # Используем int(user['user_id'])
                         cur = conn.execute("SELECT inventory FROM users WHERE user_id=?", (int(user['user_id']),))
                         inv = json.loads(cur.fetchone()[0])
                         itype = all_items[sel_item]['type']
@@ -135,7 +176,7 @@ with tab2:
                             
                         conn.execute("UPDATE users SET inventory=? WHERE user_id=?", (json.dumps(inv, ensure_ascii=False), int(user['user_id'])))
                         conn.commit()
-                    st.success(f"Выдано!")
+                    st.success("Выдано!")
                     st.rerun()
 
         with st.form("user_editor"):
@@ -166,12 +207,11 @@ with tab2:
                 try:
                     parsed_inv = json.loads(inv_str)
                     with get_conn() as conn:
-                        # Главное исправление: int(user['user_id']) вместо сырого numpy.int64
                         conn.execute("UPDATE users SET gold=?, gems=?, hp=?, max_hp=?, level=?, xp=?, clan_id=?, clan_role=?, state=?, inventory=? WHERE user_id=?", 
                                      (new_gold, new_gems, new_hp, new_max_hp, new_level, new_xp, new_clan_id, new_clan_role, new_state, json.dumps(parsed_inv, ensure_ascii=False), int(user['user_id'])))
                         conn.commit()
                     st.success("Игрок обновлен!")
-                    st.rerun() # Мгновенное обновление UI
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Ошибка в JSON: {e}")
 
@@ -188,3 +228,68 @@ with tab3:
             st.rerun()
         except Exception as e:
             st.error(f"Ошибка: {e}")
+
+# ==========================================
+# 💾 ВКЛАДКА ЭКСПОРТА SQL
+# ==========================================
+with tab4:
+    st.subheader("📥 Выгрузка базы данных в формате SQL")
+    st.markdown("Сгенерируйте и скачайте SQL-дамп текущей базы данных.")
+
+    export_mode = st.radio(
+        "Выберите режим экспорта:",
+        [
+            "🏛️ Только структура (без строк данных)",
+            "📦 Вся база данных целиком (структура + все данные)",
+            "🛡️ Вся база без игроков (контент игры, настройки, лут, но без users)"
+        ]
+    )
+
+    if st.button("⚙️ Сгенерировать SQL скрипт"):
+        with get_conn() as conn:
+            dump_lines = []
+            
+            for line in conn.iterdump():
+                # Режим 1: Только структура
+                if export_mode.startswith("🏛️"):
+                    if line.startswith("INSERT INTO"):
+                        continue
+                    dump_lines.append(line)
+                    
+                # Режим 3: Без таблицы игроков
+                elif export_mode.startswith("🛡️"):
+                    # Пропускаем вставку данных в users
+                    if line.startswith('INSERT INTO "users"') or line.startswith("INSERT INTO users"):
+                        continue
+                    dump_lines.append(line)
+                    
+                # Режим 2: Полный дамп
+                else:
+                    dump_lines.append(line)
+
+            sql_result = "\n".join(dump_lines)
+            
+            # Сохраняем в session_state для скачивания
+            st.session_state['exported_sql'] = sql_result
+            
+            if export_mode.startswith("🏛️"):
+                st.session_state['export_filename'] = "schema_only.sql"
+            elif export_mode.startswith("🛡️"):
+                st.session_state['export_filename'] = "game_data_no_users.sql"
+            else:
+                st.session_state['export_filename'] = "full_backup.sql"
+
+    if 'exported_sql' in st.session_state:
+        st.success(f"SQL скрипт успешно сформирован! Размер: {len(st.session_state['exported_sql'].encode('utf-8')) / 1024:.2f} КБ")
+        
+        st.download_button(
+            label=f"💾 Скачать {st.session_state['export_filename']}",
+            data=st.session_state['exported_sql'],
+            file_name=st.session_state['export_filename'],
+            mime="application/sql",
+            use_container_width=True
+        )
+        
+        with st.expander("👀 Предпросмотр сгенерированного SQL (первые 100 строк)"):
+            preview_lines = "\n".join(st.session_state['exported_sql'].splitlines()[:100])
+            st.code(preview_lines, language="sql")

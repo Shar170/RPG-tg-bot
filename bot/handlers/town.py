@@ -4,12 +4,11 @@ from collections import Counter
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command, CommandObject
-from database import get_user, update_user, get_connection, get_item_price, get_item_name, check_and_generate_quests, get_top_clans
+from database import get_user, update_user, get_connection, get_item_price, get_item_name, check_and_generate_quests, get_top_clans, consume_energy
 from config import DB_PATH
 
 router = Router()
 
-# Найти функцию get_town_kb() и заменить ее:
 def get_town_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚔️ Доска Рейдов", callback_data="town_raids"),
@@ -18,11 +17,10 @@ def get_town_kb():
          InlineKeyboardButton(text="🧪 Алхимия", callback_data="town_alchemy")],
         [InlineKeyboardButton(text="🔨 Мастерская", callback_data="craft_open"),
          InlineKeyboardButton(text="🏪 Торговец", callback_data="town_market")],
-        [InlineKeyboardButton(text="🍻 Таверна (Мини-игры)", callback_data="town_tavern")], # НОВОЕ
+        [InlineKeyboardButton(text="🍻 Таверна (Мини-игры)", callback_data="town_tavern")],
         [InlineKeyboardButton(text="🏡 Мой Дом", callback_data="town_home"),
          InlineKeyboardButton(text="🛡️ Клан", callback_data="clan_main")]
     ])
-
 
 def render_town_text():
     text = "🏰 **Центральный Лагерь**\n\nЗдесь безопасно. Вы можете торговать, крафтить или отправиться в рейд.\n\n"
@@ -229,6 +227,76 @@ async def market_sell_one_eq(callback: CallbackQuery):
         await callback.answer(f"Продано за {price} 🪙!")
     await market_sell_equip(callback)
 
+# --- ОБНОВЛЕННАЯ СИСТЕМА «МОЙ ДОМ» С ТИТУЛАМИ ---
 @router.callback_query(F.data == "town_home")
 async def show_home(callback: CallbackQuery):
-    await callback.message.edit_text("🏡 **Мой Дом**", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="town_back")]]), parse_mode="Markdown")
+    user = get_user(callback.from_user.id)
+    home = user.get('home_data', {})
+    inv = user.get('inventory', {})
+    
+    # 1. Динамический СТАТУС на основе уровня
+    lvl = user.get('level', 1)
+    if lvl < 10: status_name = "🟢 Начинающий авантюрист"
+    elif lvl < 20: status_name = "⚔️ Опытный наемник"
+    elif lvl < 40: status_name = "🛡️ Ветеран подземелий"
+    elif lvl < 60: status_name = "👑 Герой королевства"
+    else: status_name = "🐉 Легендарный Убийца Богов"
+    
+    # 2. Динамический ТИТУЛ на основе статистики
+    mobs = home.get('mobs_killed', 0)
+    bosses = home.get('bosses_killed', 0)
+    
+    if bosses >= 50: title = "👑 Истребитель Боссов"
+    elif mobs >= 1000: title = "☠️ Машина Смерти"
+    elif bosses >= 10: title = "👹 Гроза Исполинов"
+    elif mobs >= 250: title = "🩸 Палач Подземелий"
+    elif bosses >= 1: title = "⚔️ Убийца Босса"
+    elif mobs >= 50: title = "🗡️ Охотник на Монстров"
+    elif mobs >= 10: title = "👺 Убийца Гоблинов"
+    else: title = "🌱 Неизвестный странник"
+    
+    # Генерация стены трофеев
+    artifacts = inv.get("artifacts", [])
+    trophies_text = ""
+    if artifacts:
+        counts = Counter(artifacts)
+        for a_id, c in counts.items():
+            trophies_text += f" • {get_item_name(a_id)} (x{c})\n"
+    else:
+        trophies_text = " • *Пусто. Добывайте артефакты в рейдах и крафте!*\n"
+        
+    refs = home.get("ref_count", 0)
+    cosmetics = home.get("cosmetics", "Пусто")
+    
+    text = (f"🏡 **Дом Героя {user['username']}**\n\n"
+            f"🔰 **Статус:** {status_name}\n"
+            f"🏷️ **Титул:** {title}\n"
+            f"💀 Убито монстров: {mobs} | Боссов: {bosses}\n"
+            f"⚡ **Энергия:** {user.get('energy', 5)}/5\n\n"
+            f"📊 **Статистика:**\n"
+            f"Уровень: **{lvl}** (XP: {user.get('xp', 0)}/{lvl*100})\n"
+            f"Здоровье: **{user['hp']}/{user['max_hp']}** HP\n"
+            f"Богатство: **{user['gold']}** 🪙 | **{user.get('gems', 0)}** 💎\n\n"
+            f"🏆 **Ваши Трофеи (Артефакты):**\n{trophies_text}\n"
+            f"✨ **Убранство:** {cosmetics}\n"
+            f"🤝 **Приглашено друзей:** {refs}\n")
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛏️ Отдохнуть (1 ⚡) — Макс. ХП", callback_data="home_sleep")],
+        [InlineKeyboardButton(text="🔙 В лагерь", callback_data="town_back")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+
+@router.callback_query(F.data == "home_sleep")
+async def home_sleep(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
+    
+    if user['hp'] >= user['max_hp']:
+        return await callback.answer("Вы уже полностью здоровы! Незачем спать.", show_alert=True)
+        
+    if not consume_energy(user['user_id']):
+        return await callback.answer("У вас нет энергии для сна! (Нужна 1 ⚡)", show_alert=True)
+        
+    update_user(user['user_id'], hp=user['max_hp'])
+    await callback.answer("Вы отлично выспались! Здоровье полностью восстановлено.", show_alert=True)
+    await show_home(callback)
