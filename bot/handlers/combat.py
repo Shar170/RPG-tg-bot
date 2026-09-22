@@ -15,6 +15,47 @@ def get_combat_kb(ap: int, distance: str):
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+def render_effects_badge(combat: dict) -> str:
+    badges = []
+    # Эффекты игрока
+    if combat.get('buff_armor', 0) > 0:
+        badges.append(f"🛡️ Броня +{combat['buff_armor']} ({combat.get('buff_armor_t', 1)}х)")
+    if combat.get('buff_str', 0) > 0:
+        badges.append(f"⚔️ Сила +{combat['buff_str']} ({combat.get('buff_str_t', 1)}х)")
+    if combat.get('buff_dodge', 0) > 0:
+        badges.append(f"💨 Уворот +{int(combat['buff_dodge']*100)}% ({combat.get('buff_dodge_t', 1)}х)")
+    if combat.get('debuff_blind', 0) > 0:
+        badges.append(f"👁️ Слепота ({combat['debuff_blind']}х)")
+    if combat.get('debuff_fragile', 0) > 0:
+        badges.append(f"💔 Хрупкость ({combat['debuff_fragile']}х)")
+    if combat.get('debuff_vuln', 0) > 0:
+        badges.append(f"🎯 Уязвимость +25% ({combat['debuff_vuln']}х)")
+
+    # Дебаффы на враге
+    if combat.get('dot_burn', 0) > 0:
+        badges.append(f"🔥 Горение врага ({combat['dot_burn']}х)")
+    if combat.get('dot_poison', 0) > 0:
+        badges.append(f"🟢 Отравление врага ({combat['dot_poison']}х)")
+    if combat.get('dot_bleed', 0) > 0:
+        badges.append(f"🩸 Кровотечение врага ({combat['dot_bleed']}х)")
+    if combat.get('enemy_stun', 0) > 0:
+        badges.append(f"💫 Враг оглушен ({combat['enemy_stun']}х)")
+
+    return " | ".join(badges) if badges else "Нет"
+
+async def render_combat(callback: CallbackQuery, user: dict, combat: dict, log_msg: str):
+    dist_str = "УПОР (Ближний бой)" if combat.get('distance', 'close') == "close" else "ИЗДАЛЕКА (Дальний бой)"
+    ap_icons = "🟢 " * combat.get('ap', 3) + "⚪ " * (3 - combat.get('ap', 3))
+    enemy_name = combat.get('enemy_name', 'Враг')
+    enemy_hp = combat.get('enemy_hp', 50)
+    enemy_max = combat.get('enemy_max_hp', 50)
+    effects_text = render_effects_badge(combat)
+
+    text = (f"⚔️ **Бой: {enemy_name}**\n❤️ Враг: {enemy_hp}/{enemy_max} HP\n━━━━━━━━━━━━━━\n"
+            f"👤 Вы: {user['hp']}/{user['max_hp']} HP\n📏 Дистанция: **{dist_str}**\n⚡ ОД: {ap_icons}\n"
+            f"✨ **Эффекты:** {effects_text}\n\n💬 *{log_msg}*")
+    await callback.message.edit_text(text, reply_markup=get_combat_kb(combat.get('ap', 3), combat.get('distance', 'close')), parse_mode="Markdown")
+
 async def handle_combat_victory(callback: CallbackQuery, user_id: int, combat: dict):
     fresh_user = get_user(user_id)
     inv = fresh_user['inventory']
@@ -136,38 +177,47 @@ async def combat_attack(callback: CallbackQuery):
     else:
         enemy_hp = combat.get('enemy_hp', 50)
 
-    inv = user['inventory']
-    weapon_id = inv.get("equipment", {}).get("weapon")
-    weapon_data = get_item(weapon_id) if weapon_id else None
-
-    base_dmg = int(get_setting("base_unarmed_dmg", "5")) + (user.get('level', 1) * 2) + random.randint(0, 3)
-    w_dmg = weapon_data['stats'].get('dmg', 0) if weapon_data else 0
-    w_range = weapon_data['stats'].get('range', 'melee') if weapon_data else 'melee'
-
-    distance = combat.get('distance', 'close')
-    row_mult = (1.0 if distance == "close" else 0.3) if w_range == "melee" else (1.0 if distance == "far" else 0.5)
-
-    dmg = int((base_dmg + w_dmg) * row_mult)
-    mob_skills = combat.get('mob_skills', {})
-    enemy_name = combat.get('enemy_name', 'Враг')
-
-    if random.random() < mob_skills.get("dodge", 0):
-        log_msg = f"💨 {enemy_name} увернулся от атаки!"
+    # Учет слепоты (шанс промаха 40%)
+    if combat.get('debuff_blind', 0) > 0 and random.random() < 0.4:
+        log_msg = "👁️ Вы ослеплены и промахнулись!"
     else:
-        enemy_hp -= dmg
-        log_msg = f"Вы нанесли {dmg} урона!"
-        if row_mult < 1.0:
-            log_msg += " (Штраф за дистанцию)"
+        inv = user['inventory']
+        weapon_id = inv.get("equipment", {}).get("weapon")
+        weapon_data = get_item(weapon_id) if weapon_id else None
 
-        if enemy_hp > 0 and random.random() < mob_skills.get("counter", 0):
-            counter_dmg = int(dmg * 0.5)
-            user['hp'] -= counter_dmg
-            log_msg += f"\n⚔️ Враг контратакует! (-{counter_dmg} ХП)"
-            if user['hp'] <= 0:
-                apply_death_penalty(user['user_id'], user.get('dungeon_data', {}))
-                update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
-                from handlers.town import get_town_kb
-                return await callback.message.edit_text("☠️ **Вы убиты!** Все собранные вещи утеряны.", reply_markup=get_town_kb(), parse_mode="Markdown")
+        base_dmg = int(get_setting("base_unarmed_dmg", "5")) + (user.get('level', 1) * 2) + random.randint(0, 3)
+        w_dmg = weapon_data['stats'].get('dmg', 0) if weapon_data else 0
+        w_range = weapon_data['stats'].get('range', 'melee') if weapon_data else 'melee'
+
+        distance = combat.get('distance', 'close')
+        row_mult = (1.0 if distance == "close" else 0.3) if w_range == "melee" else (1.0 if distance == "far" else 0.5)
+
+        # Бафф силы от зелий
+        extra_str = combat.get('buff_str', 0)
+        dmg = int((base_dmg + w_dmg + extra_str) * row_mult)
+
+        mob_skills = combat.get('mob_skills', {})
+        enemy_name = combat.get('enemy_name', 'Враг')
+
+        if random.random() < mob_skills.get("dodge", 0):
+            log_msg = f"💨 {enemy_name} увернулся от атаки!"
+        else:
+            enemy_hp -= dmg
+            log_msg = f"Вы нанесли {dmg} урона!"
+            if extra_str > 0:
+                log_msg += f" (Сила +{extra_str})"
+            if row_mult < 1.0:
+                log_msg += " (Штраф за дистанцию)"
+
+            if enemy_hp > 0 and random.random() < mob_skills.get("counter", 0):
+                counter_dmg = int(dmg * 0.5)
+                user['hp'] -= counter_dmg
+                log_msg += f"\n⚔️ Враг контратакует! (-{counter_dmg} ХП)"
+                if user['hp'] <= 0:
+                    apply_death_penalty(user['user_id'], user.get('dungeon_data', {}))
+                    update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
+                    from handlers.town import get_town_kb
+                    return await callback.message.edit_text("☠️ **Вы убиты!** Все собранные вещи утеряны.", reply_markup=get_town_kb(), parse_mode="Markdown")
 
     if 'coop_host' in combat:
         host = get_user(combat['coop_host'])
@@ -210,30 +260,83 @@ async def combat_end_turn(callback: CallbackQuery):
             return await callback.message.edit_text("Монстр мертв. Возврат в город.", reply_markup=get_town_kb())
         combat['enemy_hp'] = host['combat_data'].get('enemy_hp', 50)
 
-    armor_id = user['inventory'].get("equipment", {}).get("armor")
-    armor_def = get_item(armor_id)['stats'].get('def', 0) if armor_id else 0
-    mob_skills = combat.get('mob_skills', {})
-    log_msg = ""
+    log_parts = []
 
-    mob_pref_dist = "close" if combat.get('mob_pref', 'front') == "front" else "far"
-    if combat.get('distance', 'close') != mob_pref_dist and random.random() < mob_skills.get('reposition', 0):
-        combat['distance'] = mob_pref_dist
-        action = "сокращает" if mob_pref_dist == "close" else "разрывает"
-        log_msg += f"🏃 Враг {action} дистанцию!\n"
+    # 1. ТИКИ ДОТОВ ПО ВРАГУ (Огонь, яд, кровотечение)
+    dot_dmg = 0
+    if combat.get('dot_burn', 0) > 0:
+        dot_dmg += 15
+        combat['dot_burn'] -= 1
+        log_parts.append("🔥 Ожог нанес врагу 15 урона")
+    if combat.get('dot_poison', 0) > 0:
+        dot_dmg += 12
+        combat['dot_poison'] -= 1
+        log_parts.append("🟢 Яд отравил врага на 12 урона")
+    if combat.get('dot_bleed', 0) > 0:
+        dot_dmg += 10
+        combat['dot_bleed'] -= 1
+        log_parts.append("🩸 Кровотечение сняло врагу 10 урона")
 
-    dmg_min = combat.get('dmg_min', 10)
-    dmg_max = combat.get('dmg_max', 15)
-    raw_dmg = random.randint(dmg_min, dmg_max)
-    if combat.get('distance', 'close') != mob_pref_dist:
-        raw_dmg = int(raw_dmg * 0.5)
+    if dot_dmg > 0:
+        combat['enemy_hp'] -= dot_dmg
+        if combat['enemy_hp'] <= 0:
+            if 'coop_host' in combat:
+                host = get_user(combat['coop_host'])
+                host['combat_data']['enemy_hp'] = combat['enemy_hp']
+                update_user(host['user_id'], combat_data=host['combat_data'])
+            return await handle_combat_victory(callback, user['user_id'], combat)
 
-    monster_dmg = max(1, raw_dmg - armor_def)
-    user['hp'] -= monster_dmg
-    log_msg += f"Враг бьет на {monster_dmg} урона."
+    # 2. ДЕЙСТВИЕ МОНСТРА (если не оглушен)
+    if combat.get('enemy_stun', 0) > 0:
+        combat['enemy_stun'] -= 1
+        log_parts.append("💫 Враг оглушен/спит и пропускает атаку!")
+    else:
+        # Проверка уклонения героя
+        dodge_chance = 0.05 + combat.get('buff_dodge', 0.0)
+        if random.random() < dodge_chance:
+            log_parts.append("💨 Вы ловко увернулись от удара монстра!")
+        else:
+            armor_id = user['inventory'].get("equipment", {}).get("armor")
+            base_armor = get_item(armor_id)['stats'].get('def', 0) if armor_id else 0
+            
+            # Дебафф хрупкости (срезает броню пополам)
+            if combat.get('debuff_fragile', 0) > 0:
+                base_armor = int(base_armor * 0.5)
 
-    if random.random() < mob_skills.get('poison', 0):
-        user['hp'] -= 10
-        log_msg += "\n🟢 Отравление! (-10 ХП)"
+            total_armor = base_armor + combat.get('buff_armor', 0)
+            mob_skills = combat.get('mob_skills', {})
+
+            mob_pref_dist = "close" if combat.get('mob_pref', 'front') == "front" else "far"
+            if combat.get('distance', 'close') != mob_pref_dist and random.random() < mob_skills.get('reposition', 0):
+                combat['distance'] = mob_pref_dist
+                action = "сокращает" if mob_pref_dist == "close" else "разрывает"
+                log_parts.append(f"🏃 Враг {action} дистанцию!")
+
+            dmg_min = combat.get('dmg_min', 10)
+            dmg_max = combat.get('dmg_max', 15)
+            raw_dmg = random.randint(dmg_min, dmg_max)
+            if combat.get('distance', 'close') != mob_pref_dist:
+                raw_dmg = int(raw_dmg * 0.5)
+
+            # Дебафф уязвимости (+25% урона по герою)
+            if combat.get('debuff_vuln', 0) > 0:
+                raw_dmg = int(raw_dmg * 1.25)
+
+            monster_dmg = max(1, raw_dmg - total_armor)
+            user['hp'] -= monster_dmg
+            log_parts.append(f"Враг ударил на {monster_dmg} урона.")
+
+            if random.random() < mob_skills.get('poison', 0):
+                user['hp'] -= 10
+                log_parts.append("🟢 Отравление! (-10 ХП)")
+
+    # 3. ТИКИ ДЛИТЕЛЬНОСТИ ЭФФЕКТОВ ГЕРОЯ
+    for buff_t in ['buff_armor_t', 'buff_str_t', 'buff_dodge_t', 'debuff_blind', 'debuff_fragile', 'debuff_vuln']:
+        if combat.get(buff_t, 0) > 0:
+            combat[buff_t] -= 1
+            if combat[buff_t] == 0:
+                attr = buff_t.replace('_t', '')
+                combat[attr] = 0
 
     if user['hp'] <= 0:
         apply_death_penalty(user['user_id'], user.get('dungeon_data', {}))
@@ -242,8 +345,13 @@ async def combat_end_turn(callback: CallbackQuery):
         return await callback.message.edit_text("☠️ **Вы убиты!** Все собранные вещи утеряны.", reply_markup=get_town_kb(), parse_mode="Markdown")
 
     combat['ap'] = 3
+    if 'coop_host' in combat:
+        host = get_user(combat['coop_host'])
+        host['combat_data']['enemy_hp'] = combat['enemy_hp']
+        update_user(host['user_id'], combat_data=host['combat_data'])
+
     update_user(user['user_id'], hp=user['hp'], combat_data=combat)
-    await render_combat(callback, user, combat, log_msg)
+    await render_combat(callback, user, combat, "\n".join(log_parts))
 
 @router.callback_query(F.data == "combat_act_potion")
 async def combat_use_potion_menu(callback: CallbackQuery):
@@ -297,8 +405,11 @@ async def execute_drink_combat(callback: CallbackQuery):
         combat['enemy_hp'] = host['combat_data'].get('enemy_hp', 50)
 
     p_lower = used_item.lower()
-    log_msg = f"Использовано [{used_item}].\n"
+    log_msg = f"Использовано [{used_item}]:\n"
 
+    # --- ЛОГИКА ВСЕХ ЭФФЕКТОВ ЗЕЛИЙ ---
+
+    # 1. Восстановление и баффы
     if "рагу" in p_lower:
         heal = int(user['max_hp'] * 0.35)
         user['hp'] = min(user['max_hp'], user['hp'] + heal)
@@ -307,18 +418,60 @@ async def execute_drink_combat(callback: CallbackQuery):
         heal = int(user['max_hp'] * 0.25)
         user['hp'] = min(user['max_hp'], user['hp'] + heal)
         log_msg += f"💚 +{heal} ХП\n"
-    if "урон огнем" in p_lower or "урон ядом" in p_lower or "сила тьмы" in p_lower or "урон льдом" in p_lower:
-        dmg = 30 + user.get('level', 1) * 5
-        combat['enemy_hp'] = combat.get('enemy_hp', 50) - dmg
-        log_msg += f"🔥 Враг получил {dmg} маг. урона!\n"
-    if "реген од" in p_lower or "ускорение" in p_lower:
+    if "реген од" in p_lower or "ускорение" in p_lower or "бодрость" in p_lower:
         combat['ap'] += 2
         log_msg += "⚡ +2 ОД\n"
+    if "броня" in p_lower or "сопротивление" in p_lower or "тяжесть" in p_lower:
+        combat['buff_armor'] = combat.get('buff_armor', 0) + 15
+        combat['buff_armor_t'] = 3
+        log_msg += "🛡️ Броня увеличена на +15 на 3 хода\n"
+    if "сила" in p_lower:
+        combat['buff_str'] = combat.get('buff_str', 0) + 20
+        combat['buff_str_t'] = 2
+        log_msg += "⚔️ Сила атаки увеличена на +20 на 2 хода\n"
+    if "уклонение" in p_lower or "ловкость" in p_lower or "полет" in p_lower:
+        combat['buff_dodge'] = 0.35
+        combat['buff_dodge_t'] = 2
+        log_msg += "💨 Шанс уворота +35% на 2 хода\n"
+    if "очищение" in p_lower or "мана" in p_lower:
+        combat['debuff_blind'] = 0
+        combat['debuff_fragile'] = 0
+        combat['debuff_vuln'] = 0
+        log_msg += "✨ Очищение: все негативные эффекты сняты!\n"
+
+    # 2. Боевые стихии и урон
+    if "урон огнем" in p_lower:
+        dmg = 30 + user.get('level', 1) * 5
+        combat['enemy_hp'] -= dmg
+        combat['dot_burn'] = 3
+        log_msg += f"🔥 Огненный взрыв: {dmg} урона + поджог врага на 3 хода!\n"
+    if "урон ядом" in p_lower:
+        dmg = 20 + user.get('level', 1) * 4
+        combat['enemy_hp'] -= dmg
+        combat['dot_poison'] = 4
+        log_msg += f"🟢 Отравление: {dmg} урона + яд на 4 хода!\n"
+    if "кровотечение" in p_lower:
+        combat['dot_bleed'] = 3
+        log_msg += "🩸 Наложено кровотечение на 3 хода!\n"
+    if "урон льдом" in p_lower or "замедление" in p_lower:
+        dmg = 25 + user.get('level', 1) * 4
+        combat['enemy_hp'] -= dmg
+        combat['distance'] = "far"
+        log_msg += f"❄️ Лед нанес {dmg} урона и отбросил врага назад!\n"
+    if "урон током" in p_lower or "сила тьмы" in p_lower:
+        dmg = 35 + user.get('level', 1) * 6
+        combat['enemy_hp'] -= dmg
+        log_msg += f"⚡ Чистый магический разряд: {dmg} урона сквозь броню!\n"
     if "вампиризм" in p_lower:
         v_dmg = 20
-        combat['enemy_hp'] = combat.get('enemy_hp', 50) - v_dmg
+        combat['enemy_hp'] -= v_dmg
         user['hp'] = min(user['max_hp'], user['hp'] + v_dmg)
-        log_msg += f"🩸 Иссушение врага на {v_dmg} ХП!\n"
+        log_msg += f"🩸 Иссушение врага на {v_dmg} ХП в вашу пользу!\n"
+    if "оцепенение" in p_lower or "сон" in p_lower or "страх" in p_lower:
+        combat['enemy_stun'] = 1
+        log_msg += "💫 Враг парализован и пропустит следующий ход!\n"
+
+    # 3. Экономика и утилиты
     if "богатство" in p_lower or "удача" in p_lower:
         gold_b = random.randint(30, 80)
         user['gold'] += gold_b
@@ -326,12 +479,26 @@ async def execute_drink_combat(callback: CallbackQuery):
         dungeon_data.setdefault('gathered_gold', 0)
         dungeon_data['gathered_gold'] += gold_b
         update_user(user['user_id'], dungeon_data=dungeon_data)
-        log_msg += f"💰 Свинец стал золотом! (+{gold_b} 🪙)\n"
+        log_msg += f"💰 Превращение в золото: +{gold_b} 🪙!\n"
+    if "свет" in p_lower or "защита от тьмы" in p_lower:
+        dmg = 40 + user.get('level', 1) * 5
+        combat['enemy_hp'] -= dmg
+        combat['debuff_blind'] = 0
+        log_msg += f"☀️ Вспышка света: {dmg} святого урона врагу!\n"
 
-    if "слабость" in p_lower or "ожог" in p_lower or "хрупкость" in p_lower or "болезнь" in p_lower:
-        self_dmg = 15
-        user['hp'] -= self_dmg
-        log_msg += f"🤢 Побочный эффект! (-{self_dmg} ХП)\n"
+    # 4. Побочные эффекты варки
+    if "слабость" in p_lower or "ожог" in p_lower or "болезнь" in p_lower or "удушье" in p_lower:
+        user['hp'] -= 15
+        log_msg += "🤢 Побочный эффект: ожог пищевода (-15 ХП)!\n"
+    if "хрупкость" in p_lower:
+        combat['debuff_fragile'] = 3
+        log_msg += "💔 Побочный эффект: броня ослаблена на 50% на 3 хода!\n"
+    if "слепота" in p_lower:
+        combat['debuff_blind'] = 2
+        log_msg += "👁️ Побочный эффект: ослепление на 2 хода!\n"
+    if "уязвимость" in p_lower:
+        combat['debuff_vuln'] = 3
+        log_msg += "🎯 Побочный эффект: входящий урон увеличен на 25% на 3 хода!\n"
 
     if 'coop_host' in combat:
         host = get_user(combat['coop_host'])
@@ -342,24 +509,13 @@ async def execute_drink_combat(callback: CallbackQuery):
         apply_death_penalty(user['user_id'], user.get('dungeon_data', {}))
         update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
         from handlers.town import get_town_kb
-        return await callback.message.edit_text("☠️ **Вы убили себя неудачным зельем!** Все собранные вещи утеряны.", reply_markup=get_town_kb(), parse_mode="Markdown")
+        return await callback.message.edit_text("☠️ **Вы погибли от побочного эффекта зелья!**", reply_markup=get_town_kb(), parse_mode="Markdown")
 
     if combat.get('enemy_hp', 50) <= 0:
         return await handle_combat_victory(callback, user['user_id'], combat)
 
     update_user(user['user_id'], hp=user['hp'], inventory=inv, combat_data=combat)
     await render_combat(callback, user, combat, log_msg)
-
-async def render_combat(callback: CallbackQuery, user: dict, combat: dict, log_msg: str):
-    dist_str = "УПОР (Ближний бой)" if combat.get('distance', 'close') == "close" else "ИЗДАЛЕКА (Дальний бой)"
-    ap_icons = "🟢 " * combat.get('ap', 3) + "⚪ " * (3 - combat.get('ap', 3))
-    enemy_name = combat.get('enemy_name', 'Враг')
-    enemy_hp = combat.get('enemy_hp', 50)
-    enemy_max = combat.get('enemy_max_hp', 50)
-
-    text = (f"⚔️ **Бой: {enemy_name}**\n❤️ Враг: {enemy_hp}/{enemy_max} HP\n━━━━━━━━━━━━━━\n"
-            f"👤 Вы: {user['hp']}/{user['max_hp']} HP\n📏 Дистанция: **{dist_str}**\n⚡ ОД: {ap_icons}\n\n💬 *{log_msg}*")
-    await callback.message.edit_text(text, reply_markup=get_combat_kb(combat.get('ap', 3), combat.get('distance', 'close')), parse_mode="Markdown")
 
 @router.callback_query(F.data == "combat_act_flee")
 async def combat_flee(callback: CallbackQuery):
