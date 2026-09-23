@@ -33,6 +33,13 @@ def render_effects_badge(combat: dict) -> str:
         badges.append(f"💔 Хрупкость ({combat['debuff_fragile']}х)")
     if combat.get('debuff_vuln', 0) > 0:
         badges.append(f"🎯 Уязвимость +25% ({combat['debuff_vuln']}х)")
+    
+    # Вражеские дебаффы
+    if combat.get('enemy_blind', 0) > 0:
+        badges.append(f"👁️ Враг ослеплен ({combat['enemy_blind']}х)")
+    if combat.get('enemy_vuln', 0) > 0:
+        badges.append(f"🎯 Враг уязвим ({combat['enemy_vuln']}х)")
+        
     if combat.get('dot_burn', 0) > 0:
         badges.append(f"🔥 Горение ({combat['dot_burn']}х)")
     if combat.get('dot_poison', 0) > 0:
@@ -208,6 +215,10 @@ async def combat_attack(callback: CallbackQuery):
 
         extra_str = combat.get('buff_str', 0)
         dmg = int((base_dmg + w_dmg + extra_str) * row_mult)
+        
+        # Учет уязвимости врага
+        if combat.get('enemy_vuln', 0) > 0:
+            dmg = int(dmg * 1.25)
 
         mob_skills = combat.get('mob_skills', {})
         enemy_name = combat.get('enemy_name', 'Враг')
@@ -219,6 +230,8 @@ async def combat_attack(callback: CallbackQuery):
             log_msg = f"Вы нанесли {dmg} урона!"
             if extra_str > 0:
                 log_msg += f" (Сила +{extra_str})"
+            if combat.get('enemy_vuln', 0) > 0:
+                log_msg += " (Уязвимость врага)"
             if row_mult < 1.0:
                 log_msg += " (Штраф за дистанцию)"
 
@@ -304,7 +317,12 @@ async def combat_end_turn(callback: CallbackQuery):
         log_parts.append("💫 Враг оглушен/спит и пропускает атаку!")
     else:
         dodge_chance = 0.05 + combat.get('buff_dodge', 0.0)
-        if random.random() < dodge_chance:
+        enemy_name = combat.get('enemy_name', 'Враг')
+        
+        # Учет слепоты врага
+        if combat.get('enemy_blind', 0) > 0 and random.random() < 0.4:
+            log_parts.append(f"👁️ {enemy_name} ослеплен и бьет мимо!")
+        elif random.random() < dodge_chance:
             log_parts.append("💨 Вы ловко увернулись от удара монстра!")
         else:
             armor_id = user['inventory'].get("equipment", {}).get("armor")
@@ -339,7 +357,8 @@ async def combat_end_turn(callback: CallbackQuery):
                 user['hp'] -= 10
                 log_parts.append("🟢 Отравление! (-10 ХП)")
 
-    for buff_t in ['buff_armor_t', 'buff_str_t', 'buff_dodge_t', 'debuff_blind', 'debuff_fragile', 'debuff_vuln']:
+    # Обновление таймеров баффов/дебаффов
+    for buff_t in ['buff_armor_t', 'buff_str_t', 'buff_dodge_t', 'debuff_blind', 'debuff_fragile', 'debuff_vuln', 'enemy_blind', 'enemy_vuln']:
         if combat.get(buff_t, 0) > 0:
             combat[buff_t] -= 1
             if combat[buff_t] == 0:
@@ -414,7 +433,15 @@ async def execute_drink_combat(callback: CallbackQuery):
         combat['enemy_hp'] = host['combat_data'].get('enemy_hp', 50)
 
     p_lower = used_item.lower()
-    log_msg = f"Использовано [{used_item}]:\n"
+    
+    # ЛОГИКА ТИПА ЗЕЛЬЯ: Пьем или Бросаем?
+    positive_keywords = ["хил", "реген", "рагу", "ускорение", "бодрость", "броня", "сопротивление", "тяжесть", "сила", "уклонение", "ловкость", "полет", "очищение", "мана", "богатство", "удача", "свет", "защита"]
+    is_thrown = not any(pos in p_lower for pos in positive_keywords)
+    
+    if is_thrown:
+        log_msg = f"🧪 Вы бросили во врага [{used_item}]:\n"
+    else:
+        log_msg = f"🧪 Вы выпили [{used_item}]:\n"
 
     mob_skills = combat.get('mob_skills', {})
     immunes = mob_skills.get('immune', [])
@@ -435,6 +462,7 @@ async def execute_drink_combat(callback: CallbackQuery):
             note = " 🛡️ Сопротивление (-50% урона)."
         return int(base_val * multiplier), note
 
+    # --- БАФФЫ И ХИЛ (Работают только если мы ПЬЕМ зелье) ---
     if "рагу" in p_lower:
         heal = int(user['max_hp'] * 0.35)
         user['hp'] = min(user['max_hp'], user['hp'] + heal)
@@ -450,7 +478,7 @@ async def execute_drink_combat(callback: CallbackQuery):
         combat['buff_armor'] = combat.get('buff_armor', 0) + 15
         combat['buff_armor_t'] = 3
         log_msg += "🛡️ Броня увеличена на +15 на 3 хода\n"
-    if "сила" in p_lower:
+    if "сила" in p_lower and "сила тьмы" not in p_lower:
         combat['buff_str'] = combat.get('buff_str', 0) + 20
         combat['buff_str_t'] = 2
         log_msg += "⚔️ Сила атаки увеличена на +20 на 2 хода\n"
@@ -464,6 +492,7 @@ async def execute_drink_combat(callback: CallbackQuery):
         combat['debuff_vuln'] = 0
         log_msg += "✨ Очищение: все негативные эффекты сняты!\n"
 
+    # --- АТАКУЮЩИЕ ЭФФЕКТЫ (Всегда бьют врага) ---
     if "урон огнем" in p_lower:
         dmg, note = calc_element_dmg(30 + user.get('level', 1) * 5, "fire")
         if dmg > 0:
@@ -545,24 +574,46 @@ async def execute_drink_combat(callback: CallbackQuery):
         update_user(user['user_id'], dungeon_data=dungeon_data)
         log_msg += f"💰 Превращение в золото: +{gold_b} 🪙!\n"
 
+    # --- ДЕБАФФЫ (Определяются броском или распитием) ---
     if "слабость" in p_lower or "ожог" in p_lower or "болезнь" in p_lower or "удушье" in p_lower:
-        user['hp'] -= 15
-        log_msg += "🤢 Побочный эффект: ожог пищевода (-15 ХП)!\n"
+        if is_thrown:
+            combat['enemy_hp'] -= 15
+            log_msg += "💥 Колба разбилась, нанеся врагу 15 урона от ядовитых паров!\n"
+        else:
+            user['hp'] -= 15
+            log_msg += "🤢 Побочный эффект: ожог пищевода (-15 ХП)!\n"
+            
     if "хрупкость" in p_lower:
-        combat['debuff_fragile'] = 3
-        log_msg += "💔 Побочный эффект: броня ослаблена на 50% на 3 хода!\n"
+        if is_thrown:
+            combat['enemy_vuln'] = 3
+            log_msg += "🎯 Броня врага разъедена! (Получает +25% урона на 3 хода)\n"
+        else:
+            combat['debuff_fragile'] = 3
+            log_msg += "💔 Побочный эффект: ваша броня ослаблена на 50% на 3 хода!\n"
+            
     if "слепота" in p_lower:
-        combat['debuff_blind'] = 2
-        log_msg += "👁️ Побочный эффект: ослепление на 2 хода!\n"
+        if is_thrown:
+            combat['enemy_blind'] = 2
+            log_msg += "👁️ Враг ослеплен на 2 хода!\n"
+        else:
+            combat['debuff_blind'] = 2
+            log_msg += "👁️ Побочный эффект: ослепление на 2 хода!\n"
+            
     if "уязвимость" in p_lower:
-        combat['debuff_vuln'] = 3
-        log_msg += "🎯 Побочный эффект: входящий урон увеличен на 25% на 3 хода!\n"
+        if is_thrown:
+            combat['enemy_vuln'] = 3
+            log_msg += "🎯 Враг стал уязвим! (Получает +25% урона на 3 хода)\n"
+        else:
+            combat['debuff_vuln'] = 3
+            log_msg += "🎯 Побочный эффект: входящий урон увеличен на 25% на 3 хода!\n"
 
+    # Обновление данных хоста в Co-op
     if 'coop_host' in combat:
         host = get_user(combat['coop_host'])
         host['combat_data']['enemy_hp'] = combat['enemy_hp']
         update_user(host['user_id'], combat_data=host['combat_data'])
 
+    # Проверки на смерть
     if user['hp'] <= 0:
         track_stat(user['user_id'], 'deaths_count', 1)
         apply_death_penalty(user['user_id'], user.get('dungeon_data', {}))
@@ -598,12 +649,11 @@ async def combat_flee_confirm(callback: CallbackQuery):
 async def combat_flee_cancel(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     
-    # Если мы находимся в бою — возвращаем интерфейс боя
     if user.get('state') == 'STATE_COMBAT':
         combat = user.get('combat_data', {})
         await render_combat(callback, user, combat, "Вы решили остаться и драться!")
     else:
-        # Если мы находимся на развилке в коридоре — возвращаем развилку
         d_data = user.get('dungeon_data', {})
         from handlers.dungeon import get_navigation_kb
         await callback.message.edit_text("Вы передумали сбегать и продолжили путь.", reply_markup=get_navigation_kb(d_data), parse_mode="Markdown")
+

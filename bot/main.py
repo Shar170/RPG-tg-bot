@@ -3,8 +3,8 @@ from aiogram import Bot, Dispatcher
 from config import BOT_TOKEN
 from database import init_db, seed_all
 
-# Импортируем все хендлеры, ВКЛЮЧАЯ MINIGAMES
-from handlers import town, dungeon, combat, alchemy, inventory, craft, minigames 
+# Импортируем все хендлеры, включая minigames и market
+from handlers import town, dungeon, combat, alchemy, inventory, craft, minigames, market 
 from handlers.clans import router as clans_router
 
 
@@ -16,12 +16,13 @@ async def main():
     dp = Dispatcher()
     
     dp.include_router(town.router)
-    dp.include_router(minigames.router) # НОВОЕ
+    dp.include_router(minigames.router)
     dp.include_router(dungeon.router)
     dp.include_router(combat.router)
     dp.include_router(alchemy.router)
     dp.include_router(inventory.router)
     dp.include_router(craft.router)
+    dp.include_router(market.router) # НОВОЕ: Подключен модуль рынка
     dp.include_router(clans_router)
     
     print("Бот успешно запущен!")
@@ -30,3 +31,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+

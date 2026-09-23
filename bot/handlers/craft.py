@@ -4,7 +4,7 @@ from database import get_user, update_user, get_all_recipes, get_item, get_item_
 
 router = Router()
 
-@router.callback_query(F.data == "craft_open")
+@router.callback_query(F.data == "town_craft")
 async def open_workshop(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     materials = user['inventory'].get("materials", {})
@@ -60,3 +60,4 @@ async def do_craft(callback: CallbackQuery):
     
     await callback.answer(f"✨ Создано: {result_item['name']}!", show_alert=True)
     await open_workshop(callback)
+

@@ -66,9 +66,10 @@ async def explore_pick_second(callback: CallbackQuery):
     
     for ing_id, count in sorted(materials.items()):
         if ing_id in all_ing and count > 0:
-            # Если ингредиент тот же, нужно минимум 2 шт.
-            if ing_id == ing1_id and count < 2:
+            # Строгий запрет: ингредиент не может смешиваться сам с собой
+            if ing_id == ing1_id:
                 continue
+                
             buttons.append([InlineKeyboardButton(
                 text=f"Смешать с: {all_ing[ing_id]['name']} (x{count})", 
                 callback_data=f"alch_exp_mix:{ing1_id}:{ing_id}"
@@ -82,12 +83,15 @@ async def explore_execute_mix(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     _, ing1, ing2 = callback.data.split(":")
     
+    # Бэкенд-защита от подмены callback_data
+    if ing1 == ing2:
+        return await callback.answer("Нельзя смешивать одинаковые ингредиенты!", show_alert=True)
+    
     inv = user['inventory']
     materials = inv.get("materials", {})
     
-    # Проверка количества
-    needed_1 = 2 if ing1 == ing2 else 1
-    if materials.get(ing1, 0) < needed_1 or (ing1 != ing2 and materials.get(ing2, 0) < 1):
+    # Проверка наличия ингредиентов
+    if materials.get(ing1, 0) < 1 or materials.get(ing2, 0) < 1:
         return await callback.answer("Недостаточно ингредиентов!", show_alert=True)
         
     materials[ing1] -= 1
@@ -281,3 +285,4 @@ async def produce_batch_execute(callback: CallbackQuery):
         [InlineKeyboardButton(text="🔙 В лагерь", callback_data="town_back")]
     ])
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+
