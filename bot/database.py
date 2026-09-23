@@ -12,11 +12,22 @@ def get_connection():
 def init_db():
     with get_connection() as conn:
         cursor = conn.cursor()
+        
+        # Безопасное добавление last_msg_id для защиты от чизинга
+        try: cursor.execute("ALTER TABLE users ADD COLUMN last_msg_id INTEGER DEFAULT 0")
+        except sqlite3.OperationalError: pass
+            
+        # Безопасное добавление match_state для PvP-движка (дистанция, дебаффы)
+        try: cursor.execute("ALTER TABLE pvp_matches ADD COLUMN match_state TEXT DEFAULT '{}'")
+        except sqlite3.OperationalError: pass
+            
         cursor.execute('''CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY, username TEXT, state TEXT, hp INTEGER, max_hp INTEGER,
             gold INTEGER, inventory TEXT, home_data TEXT, combat_data TEXT, known_traits TEXT, dungeon_data TEXT,
             level INTEGER DEFAULT 1, xp INTEGER DEFAULT 0, clan_id INTEGER DEFAULT 0, gems INTEGER DEFAULT 0, 
-            quests_data TEXT DEFAULT '{}', clan_role TEXT DEFAULT 'thrall', energy INTEGER DEFAULT 5, last_energy_time INTEGER DEFAULT 0)''')
+            quests_data TEXT DEFAULT '{}', clan_role TEXT DEFAULT 'thrall', energy INTEGER DEFAULT 5, 
+            last_energy_time INTEGER DEFAULT 0, last_msg_id INTEGER DEFAULT 0)''')
+            
         cursor.execute('''CREATE TABLE IF NOT EXISTS daily_dungeons (
             day_index INTEGER PRIMARY KEY, name TEXT, desc TEXT, mobs TEXT, loot_id TEXT, loot_name TEXT, boss_id TEXT, mob_modifier REAL)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS bestiary (
@@ -38,6 +49,14 @@ def init_db():
         cursor.execute('''CREATE TABLE IF NOT EXISTS war_regions (
             region_id INTEGER PRIMARY KEY, name TEXT, desc TEXT, target_clears INTEGER DEFAULT 100000, 
             current_clears INTEGER DEFAULT 0, is_liberated INTEGER DEFAULT 0, boss_id TEXT, mobs TEXT)''')
+            
+        # Таблицы Арены
+        cursor.execute('''CREATE TABLE IF NOT EXISTS arena_queue (
+            user_id INTEGER PRIMARY KEY, level INTEGER, clan_id INTEGER, joined_at REAL)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS pvp_matches (
+            match_id INTEGER PRIMARY KEY AUTOINCREMENT, p1_id INTEGER, p2_id INTEGER, 
+            p1_hp INTEGER, p2_hp INTEGER, p1_max INTEGER, p2_max INTEGER, 
+            p1_ap INTEGER, p2_ap INTEGER, turn INTEGER, log TEXT, match_state TEXT DEFAULT '{}')''')
         conn.commit()
 
 def seed_all():
@@ -148,38 +167,6 @@ def seed_all():
             ("rec_smoke_bomb", "smoke_bomb", json.dumps({"iron_ingot": 1, "cave_mushroom": 2}), 50)
         ]
         cursor.executemany("INSERT OR REPLACE INTO recipes VALUES (?, ?, ?, ?)", recipes)
-
-        cursor.execute("DELETE FROM loot_tables")
-        loot_entries = [
-            ("solo", "iron_ingot", 0.35, 1, 2),
-            ("solo", "wood_sword", 0.03, 1, 1),
-            ("solo", "cave_mushroom", 0.30, 1, 2),
-            ("solo", "light_flower", 0.25, 1, 2),
-            ("solo", "mountain_moss", 0.20, 1, 2),
-            ("solo", "water_lily", 0.15, 1, 2),
-            ("event_0", "bone_marrow", 0.35, 1, 2),
-            ("event_0", "grave_dust", 0.30, 1, 3),
-            ("event_0", "cave_mushroom", 0.25, 1, 2),
-            ("event_1", "fire_root", 0.35, 1, 2),
-            ("event_1", "iron_ingot", 0.40, 1, 3),
-            ("event_1", "obsidian_shard", 0.20, 1, 2),
-            ("event_2", "poison_gland", 0.35, 1, 2),
-            ("event_2", "swamp_rot", 0.30, 1, 2),
-            ("event_2", "toad_wart", 0.25, 1, 3),
-            ("event_3", "time_tear", 0.25, 1, 2),
-            ("event_3", "crystal_shard", 0.30, 1, 2),
-            ("event_3", "moon_dust", 0.20, 1, 2),
-            ("event_4", "demon_blood", 0.25, 1, 2),
-            ("event_4", "blood_rose", 0.25, 1, 2),
-            ("event_4", "shadow_essence", 0.20, 1, 2),
-            ("event_5", "gold_petal", 0.25, 1, 2),
-            ("event_5", "desert_mirage", 0.30, 1, 2),
-            ("event_5", "leprechaun_clover", 0.15, 1, 1),
-            ("event_6", "epic_token", 0.25, 1, 1),
-            ("event_6", "harpy_claw", 0.30, 1, 2),
-            ("event_6", "iron_ingot", 0.40, 2, 4)
-        ]
-        cursor.executemany("INSERT INTO loot_tables (location_id, item_id, chance, min_amount, max_amount) VALUES (?, ?, ?, ?, ?)", loot_entries)
         conn.commit()
 
 def get_player_max_energy(player_level: int = 1) -> int:
@@ -207,8 +194,7 @@ def get_clan_creation_requirements() -> dict:
 def calculate_damage_received(raw_dmg: int, def_val: int) -> int:
     k = float(get_setting("armor_formula_k", "60"))
     max_dr = float(get_setting("max_damage_reduction", "0.75"))
-    if def_val <= 0:
-        return max(1, raw_dmg)
+    if def_val <= 0: return max(1, raw_dmg)
     reduction = min(max_dr, def_val / (def_val + k))
     return max(1, int(raw_dmg * (1.0 - reduction)))
 
@@ -227,8 +213,7 @@ def get_scaled_mob(mob_id: str, player_lvl: int = 1) -> dict:
 
 def track_stat(user_id: int, stat_name: str, amount: int = 1):
     user = get_user(user_id)
-    if not user:
-        return
+    if not user: return
     home = user.get('home_data', {})
     stats = home.setdefault('stats', {})
     stats[stat_name] = stats.get(stat_name, 0) + amount
@@ -238,127 +223,16 @@ def track_stat(user_id: int, stat_name: str, amount: int = 1):
 def get_unlocked_titles(home_data: dict) -> list[str]:
     stats = home_data.get('stats', {})
     titles = ["Новичок"]
-    m_k = stats.get('mobs_killed', 0) + home_data.get('mobs_killed', 0)
-    b_k = stats.get('bosses_killed', 0) + home_data.get('bosses_killed', 0)
+    m_k = stats.get('mobs_killed', 0)
+    b_k = stats.get('bosses_killed', 0)
 
     if m_k >= 10: titles.append("Истребитель Слизней")
-    if m_k >= 50: titles.append("Гроза Подземелий")
     if m_k >= 200: titles.append("Мясник Камарии")
     if b_k >= 5: titles.append("Охотник на Боссов")
-    if b_k >= 25: titles.append("Покоритель Титанов")
-    if b_k >= 100: titles.append("Смерть Богов")
-
-    if stats.get('kills_bone_dragon', 0) >= 100: titles.append("Укротитель Драконов")
-    if stats.get('kills_fire_lord', 0) >= 100: titles.append("Покоритель Пламени")
-    if stats.get('kills_spider_queen', 0) >= 100: titles.append("Гроза Арахнидов")
-    if stats.get('kills_time_keeper', 0) >= 100: titles.append("Владыка Хроноса")
-    if stats.get('kills_abyss_priest', 0) >= 100: titles.append("Бич Пустоты")
-    if stats.get('kills_arena_champ', 0) >= 100: titles.append("Непобедимый Гладиатор")
-    if stats.get('kills_greed_spirit', 0) >= 100: titles.append("Истребитель Алчности")
-
-    if stats.get('riddles_solved', 0) >= 5: titles.append("Мыслитель")
-    if stats.get('riddles_solved', 0) >= 25: titles.append("Магистр Загадок")
-    if stats.get('riddles_failed', 0) >= 5: titles.append("Горе от Ума")
-
-    if stats.get('crafts_count', 0) >= 5: titles.append("Кузнечный Подмастерье")
-    if stats.get('crafts_count', 0) >= 30: titles.append("Легендарный Кузнец")
-    if stats.get('potions_brewed', 0) >= 10: titles.append("Травник")
-    if stats.get('potions_brewed', 0) >= 50: titles.append("Магистр Колб")
-    if stats.get('traits_discovered', 0) >= 15: titles.append("Исследователь Эфира")
-
-    if stats.get('mines_cleared', 0) >= 5: titles.append("Старатель")
-    if stats.get('mines_cleared', 0) >= 25: titles.append("Владыка Недр")
-    if stats.get('locks_picked', 0) >= 5: titles.append("Ловкие Пальцы")
-    if stats.get('locks_picked', 0) >= 20: titles.append("Медвежатник")
-    if stats.get('locks_failed', 0) >= 5: titles.append("Кривые Ручки")
-    if stats.get('dice_won', 0) >= 5: titles.append("Азартный Бродяга")
-    if stats.get('dice_won', 0) >= 20: titles.append("Любимчик Фортуны")
-
-    if stats.get('deaths_count', 0) >= 3: titles.append("Восставший из Пепла")
-    if stats.get('deaths_count', 0) >= 15: titles.append("Постоянный Гость Валгаллы")
-    if stats.get('flees_count', 0) >= 5: titles.append("Мастер Отступления")
-    if stats.get('empty_rooms', 0) >= 15: titles.append("Исследователь Пустоты")
-
-    if stats.get('war_clears', 0) >= 1: titles.append("Рядовой Освобождения")
+    if stats.get('pvp_wins', 0) >= 10: titles.append("Гладиатор")
     if stats.get('war_clears', 0) >= 20: titles.append("Герой Камарии")
 
     return sorted(list(set(titles)))
-
-def generate_matrix_riddle() -> dict:
-    rule = random.choice(["add_first_two", "diff_first_two", "sum_edges"])
-    rows = []
-    for _ in range(3):
-        if rule == "add_first_two":
-            a = random.randint(1, 9)
-            b = random.randint(1, 9)
-            c = a + b
-        elif rule == "diff_first_two":
-            b = random.randint(1, 7)
-            diff = random.randint(1, 6)
-            a = b + diff
-            c = a - b
-        else:
-            a = random.randint(1, 8)
-            c = random.randint(1, 8)
-            b = a + c
-        rows.append([a, b, c])
-
-    correct_ans = rows[2][2] if rule != "sum_edges" else rows[2][1]
-    grid_text = (
-        f"`{rows[0][0]:>2}  {rows[0][1]:>2}  {rows[0][2]:>2}`\n"
-        f"`{rows[1][0]:>2}  {rows[1][1]:>2}  {rows[1][2]:>2}`\n"
-    )
-    if rule != "sum_edges":
-        grid_text += f"`{rows[2][0]:>2}  {rows[2][1]:>2}   ?`"
-    else:
-        grid_text += f"`{rows[2][0]:>2}   ?  {rows[2][2]:>2}`"
-
-    wrongs = set()
-    offsets = [-3, -2, -1, 1, 2, 3, 4]
-    random.shuffle(offsets)
-    for off in offsets:
-        val = correct_ans + off
-        if val > 0 and val != correct_ans:
-            wrongs.add(val)
-        if len(wrongs) == 3:
-            break
-
-    options = list(wrongs) + [correct_ans]
-    random.shuffle(options)
-
-    return {
-        "text": f"🧩 **Древняя Руническая Таблица:**\nНайдите закономерность и определите число вместо **?**:\n\n{grid_text}",
-        "correct": str(correct_ans),
-        "options": [str(x) for x in options]
-    }
-
-def generate_clock_riddle() -> dict:
-    h = random.randint(1, 12)
-    m = random.choice([0, 10, 15, 20, 30, 40, 45, 50])
-    angle = abs(30 * h - 5.5 * m) % 360
-    if angle > 180:
-        angle = 360 - angle
-    ans_str = f"{int(angle)}°" if angle.is_integer() else f"{angle}°"
-
-    wrongs = set()
-    shifts = [-25, -15, -10, 10, 15, 20, 25, 30]
-    random.shuffle(shifts)
-    for s in shifts:
-        fake = angle + s
-        if 0 < fake <= 180 and fake != angle:
-            fake_str = f"{int(fake)}°" if fake.is_integer() else f"{fake}°"
-            wrongs.add(fake_str)
-        if len(wrongs) == 3:
-            break
-
-    options = list(wrongs) + [ans_str]
-    random.shuffle(options)
-
-    return {
-        "text": f"🕰️ **Хроно-Алтарь Древних:**\nКакой наименьший угол образуют стрелки часов в **{h:02d}:{m:02d}**?",
-        "correct": ans_str,
-        "options": options
-    }
 
 def get_all_war_regions():
     with get_connection() as conn:
@@ -373,8 +247,7 @@ def get_all_war_regions():
 
 def progress_war_region(region_id: int, user_id: int, home_data: dict = None) -> tuple[dict, int]:
     user = get_user(user_id)
-    if home_data is None:
-        home_data = user.get('home_data', {})
+    if home_data is None: home_data = user.get('home_data', {})
     
     medals = home_data.setdefault('medals', [])
     stats = home_data.setdefault('stats', {})
@@ -388,8 +261,7 @@ def progress_war_region(region_id: int, user_id: int, home_data: dict = None) ->
         if row:
             r_name, target, current, is_lib = row
             p_medal = f"🎖️ Защитник: {r_name}"
-            if p_medal not in medals:
-                medals.append(p_medal)
+            if p_medal not in medals: medals.append(p_medal)
 
             new_current = current + 1
             new_lib = 1 if new_current >= target else is_lib
@@ -422,36 +294,6 @@ def get_user(user_id: int):
                 else: 
                     u_dict[json_field] = {}
                 
-            now = int(time.time())
-            player_lvl = u_dict.get('level', 1)
-            max_en = get_player_max_energy(player_lvl)
-            regen_sec = int(get_setting("energy_regen_seconds", "7200"))
-            
-            energy = u_dict.get('energy', max_en)
-            last_time = u_dict.get('last_energy_time', now)
-            if energy is None: energy = max_en
-            if last_time is None or last_time == 0: last_time = now
-
-            if regen_sec <= 0:
-                energy = max_en
-                last_time = now
-                cursor.execute("UPDATE users SET energy=?, last_energy_time=? WHERE user_id=?", (energy, last_time, user_id))
-                conn.commit()
-            elif energy < max_en:
-                elapsed = now - last_time
-                gained = elapsed // regen_sec
-                if gained > 0:
-                    energy = min(max_en, energy + gained)
-                    last_time += gained * regen_sec
-                    if energy == max_en: last_time = now
-                    cursor.execute("UPDATE users SET energy=?, last_energy_time=? WHERE user_id=?", (energy, last_time, user_id))
-                    conn.commit()
-
-            u_dict['energy'] = energy
-            u_dict['max_energy'] = max_en
-            u_dict['last_energy_time'] = last_time
-            u_dict['next_energy_in'] = (regen_sec - (now - last_time)) if (energy < max_en and regen_sec > 0) else 0
-            
             return u_dict
     return None
 
@@ -465,14 +307,10 @@ def update_user(user_id: int, **kwargs):
         conn.commit()
 
 def consume_energy(user_id: int, amount: int = 1) -> bool:
-    if amount <= 0:
-        return True
+    if amount <= 0: return True
     user = get_user(user_id)
-    max_en = user.get('max_energy', get_player_max_energy(user.get('level', 1)))
     if user['energy'] >= amount:
-        new_energy = user['energy'] - amount
-        new_time = int(time.time()) if user['energy'] == max_en else user['last_energy_time']
-        update_user(user_id, energy=new_energy, last_energy_time=new_time)
+        update_user(user_id, energy=user['energy'] - amount)
         return True
     return False
 
@@ -485,7 +323,7 @@ def get_clan(clan_id: int):
 def get_clan_by_name(name: str):
     with get_connection() as conn:
         row = conn.cursor().execute("SELECT * FROM clans WHERE name = ?", (name,)).fetchone()
-        if row: return {"clan_id": row[0], "name": row[1], "leader_id": row[2], "treasury": row[3], "level": row[4], "weekly_raids": row[5], "join_requests": json.loads(row[6]), "clan_vault": row[7]}
+        if row: return {"clan_id": row[0], "name": row[1]}
     return None
 
 def update_clan(clan_id: int, **kwargs):
@@ -496,13 +334,6 @@ def update_clan(clan_id: int, **kwargs):
             cursor.execute(f"UPDATE clans SET {key} = ? WHERE clan_id = ?", (value, clan_id))
         conn.commit()
 
-def get_top_clans(limit=3):
-    check_and_distribute_weekly_clan_rewards()
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT name, weekly_raids FROM clans ORDER BY weekly_raids DESC LIMIT ?", (limit,))
-        return [{"name": row[0], "weekly_raids": row[1]} for row in cursor.fetchall()]
-
 def get_clan_members(clan_id: int):
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -510,12 +341,10 @@ def get_clan_members(clan_id: int):
         return [{"user_id": r[0], "username": r[1], "level": r[2], "clan_role": r[3], "state": r[4]} for r in cursor.fetchall()]
 
 def get_all_clans_ranked():
-    check_and_distribute_weekly_clan_rewards()
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT clan_id, name, level, weekly_raids, join_requests FROM clans ORDER BY weekly_raids DESC, clan_id ASC")
         rows = cursor.fetchall()
-        
         result = []
         for rank, row in enumerate(rows, start=1):
             clan_id, name, level, _, join_reqs_raw = row
@@ -523,60 +352,23 @@ def get_all_clans_ranked():
             cursor.execute("SELECT COUNT(*), AVG(level) FROM users WHERE clan_id = ?", (clan_id,))
             count, avg_lvl = cursor.fetchone()
             result.append({
-                "clan_id": clan_id,
-                "rank": rank,
-                "name": name,
-                "level": level,
-                "avg_level": round(avg_lvl or 1.0, 1),
-                "members_count": count or 0,
-                "max_members": max_members,
-                "free_slots": max(0, max_members - (count or 0)),
+                "clan_id": clan_id, "rank": rank, "name": name, "level": level,
+                "avg_level": round(avg_lvl or 1.0, 1), "members_count": count or 0,
+                "max_members": max_members, "free_slots": max(0, max_members - (count or 0)),
                 "join_requests": json.loads(join_reqs_raw) if join_reqs_raw else []
             })
         return result
-
-def check_and_distribute_weekly_clan_rewards():
-    today = datetime.date.today()
-    current_year, current_week, _ = today.isocalendar()
-    current_week_key = f"{current_year}_W{current_week}"
-    
-    last_reward_week = get_setting("last_clan_reward_week", "")
-    if last_reward_week == current_week_key:
-        return
-    
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT clan_id, name, weekly_raids FROM clans ORDER BY weekly_raids DESC LIMIT 3")
-        top_clans = cursor.fetchall()
-        rewards = [10, 5, 1]
-        for idx, clan in enumerate(top_clans):
-            if clan[2] > 0:
-                clan_id = clan[0]
-                gems_reward = rewards[idx]
-                cursor.execute("SELECT clan_vault FROM clans WHERE clan_id = ?", (clan_id,))
-                vault_row = cursor.fetchone()
-                vault = json.loads(vault_row[0]) if vault_row and vault_row[0] else {"gold": 0, "items": {}}
-                vault["gems"] = vault.get("gems", 0) + gems_reward
-                cursor.execute("UPDATE clans SET clan_vault = ? WHERE clan_id = ?", (json.dumps(vault, ensure_ascii=False), clan_id))
-        
-        cursor.execute("UPDATE clans SET weekly_raids = 0")
-        cursor.execute("INSERT OR REPLACE INTO game_settings (key, value) VALUES ('last_clan_reward_week', ?)", (current_week_key,))
-        conn.commit()
 
 def check_and_generate_quests(user_id):
     user = get_user(user_id)
     quests_data = user.get('quests_data', {})
     today = datetime.datetime.today().strftime('%Y-%m-%d')
-    types_present = [q.get("type") for q in quests_data.get("quests", [])]
-    has_duplicates = len(types_present) != len(set(types_present))
-    if quests_data.get("date") != today or has_duplicates:
+    if quests_data.get("date") != today:
         categories = [
-            [{"type": "kill_mobs", "desc": "Убить 5 монстров", "target": 5}, {"type": "kill_mobs", "desc": "Убить 15 монстров", "target": 15}],
-            [{"type": "raid_success", "desc": "Зачистить 1 подземелье", "target": 1}, {"type": "raid_success", "desc": "Зачистить 3 подземелья", "target": 3}],
-            [{"type": "craft_items", "desc": "Скрафтить 1 предмет", "target": 1}, {"type": "craft_items", "desc": "Скрафтить 3 предмета", "target": 3}]
+            [{"type": "kill_mobs", "desc": "Убить 5 монстров", "target": 5}],
+            [{"type": "raid_success", "desc": "Зачистить 1 подземелье", "target": 1}]
         ]
         selected = [random.choice(cat) for cat in categories]
-        random.shuffle(selected)
         for q in selected: q["progress"] = 0; q["completed"] = False
         quests_data = {"date": today, "quests": selected, "claimed": False}
         update_user(user_id, quests_data=quests_data)
@@ -676,3 +468,27 @@ def apply_death_penalty(user_id: int, dungeon_data: dict):
         if e_id in inv.get("backpack", []): inv["backpack"].remove(e_id)
         elif e_id in inv.get("artifacts", []): inv["artifacts"].remove(e_id)
     update_user(user_id, gold=user['gold'], hp=max(1, int(user['max_hp'] * 0.5)), inventory=inv)
+
+# --- НОВЫЕ ХЕЛПЕРЫ АРЕНЫ ---
+def get_pvp_match(match_id: int):
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM pvp_matches WHERE match_id = ?", (match_id,))
+        row = cursor.fetchone()
+        if row:
+            cols = [desc[0] for desc in cursor.description]
+            return dict(zip(cols, row))
+    return None
+
+def update_pvp_match(match_id: int, **kwargs):
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        for key, value in kwargs.items():
+            cursor.execute(f"UPDATE pvp_matches SET {key} = ? WHERE match_id = ?", (value, match_id))
+        conn.commit()
+        
+def remove_from_queue(user_id: int):
+    with get_connection() as conn:
+        conn.cursor().execute("DELETE FROM arena_queue WHERE user_id = ?", (user_id,))
+        conn.commit()
+
