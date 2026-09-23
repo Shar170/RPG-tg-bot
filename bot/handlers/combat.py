@@ -5,7 +5,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardBut
 from database import (
     get_user, update_user, get_item, get_loot_table, get_item_name, get_setting,
     apply_flee_penalty, apply_death_penalty, add_quest_progress, get_clan, update_clan,
-    calculate_damage_received
+    calculate_damage_received, progress_war_region, track_stat
 )
 
 router = Router()
@@ -21,7 +21,6 @@ def get_combat_kb(ap: int, distance: str):
 
 def render_effects_badge(combat: dict) -> str:
     badges = []
-    # Баффы и дебаффы игрока
     if combat.get('buff_armor', 0) > 0:
         badges.append(f"🛡️ Броня +{combat['buff_armor']} ({combat.get('buff_armor_t', 1)}х)")
     if combat.get('buff_str', 0) > 0:
@@ -34,8 +33,6 @@ def render_effects_badge(combat: dict) -> str:
         badges.append(f"💔 Хрупкость ({combat['debuff_fragile']}х)")
     if combat.get('debuff_vuln', 0) > 0:
         badges.append(f"🎯 Уязвимость +25% ({combat['debuff_vuln']}х)")
-
-    # Дебаффы на враге
     if combat.get('dot_burn', 0) > 0:
         badges.append(f"🔥 Горение ({combat['dot_burn']}х)")
     if combat.get('dot_poison', 0) > 0:
@@ -67,11 +64,16 @@ async def handle_combat_victory(callback: CallbackQuery, user_id: int, combat: d
     location_id = f"event_{datetime.datetime.today().weekday()}" if dungeon_data.get('dungeon_type', 'solo') == "event" else "solo"
     is_boss = not dungeon_data.get("nodes", {}).get(dungeon_data.get("current_node"), {}).get("next")
 
-    # Сохранение статистики в home_data
     home = fresh_user.get('home_data', {})
     home['mobs_killed'] = home.get('mobs_killed', 0) + 1
+    track_stat(user_id, 'mobs_killed', 1)
+    
+    enemy_id = combat.get('enemy_id', '')
     if is_boss:
         home['bosses_killed'] = home.get('bosses_killed', 0) + 1
+        track_stat(user_id, 'bosses_killed', 1)
+        if enemy_id:
+            track_stat(user_id, f"kills_{enemy_id}", 1)
 
     add_quest_progress(user_id, "kill_mobs", 1)
 
@@ -117,10 +119,18 @@ async def handle_combat_victory(callback: CallbackQuery, user_id: int, combat: d
             drop_msg += f"\n✨ Выбито: **{get_item_name(loot['item_id'])}** (x{qty})"
             dropped_count += 1
 
+    if dungeon_data.get('dungeon_type') == 'war' and is_boss:
+        home, bonus_gems = progress_war_region(dungeon_data['war_region_id'], user_id, home_data=home)
+        fresh_user['gems'] = fresh_user.get('gems', 0) + bonus_gems
+        drop_msg += "\n\n🌍 **Вклад в освобождение региона засчитан!** Медаль добавлена на Стенд Славы в доме."
+        if bonus_gems > 0:
+            drop_msg += f"\n🏆 **РЕГИОН ПОЛНОСТЬЮ ОСВОБОЖДЕН!** Награда: +{bonus_gems} 💎!"
+
     update_user(
         user_id,
         state='STATE_DUNGEON',
         gold=fresh_user['gold'],
+        gems=fresh_user.get('gems', 0),
         hp=fresh_user['hp'],
         max_hp=fresh_user['max_hp'],
         level=fresh_user['level'],
@@ -141,13 +151,13 @@ async def handle_combat_victory(callback: CallbackQuery, user_id: int, combat: d
         from handlers.town import get_town_kb
         update_user(user_id, state='STATE_TOWN', dungeon_data={})
         if 'coop_host' in combat:
-            return await callback.message.edit_text(f"🏆 **Монстр повержен в Co-op!**\n{drop_msg}", reply_markup=get_town_kb(), parse_mode="Markdown")
-        return await callback.message.edit_text(f"🏆 **Рейд завершен!**\n{drop_msg}", reply_markup=get_town_kb(), parse_mode="Markdown")
+            return await callback.message.edit_text(f"🏆 **Монстр повержен в Co-op!**\n{drop_msg}", reply_markup=get_town_kb(fresh_user), parse_mode="Markdown")
+        return await callback.message.edit_text(f"🏆 **Рейд завершен!**\n{drop_msg}", reply_markup=get_town_kb(fresh_user), parse_mode="Markdown")
     else:
         from handlers.dungeon import get_navigation_kb
         if 'coop_host' in combat:
             from handlers.town import get_town_kb
-            return await callback.message.edit_text(f"🎉 **Монстр повержен!** Вы помогли хосту.\n{drop_msg}", reply_markup=get_town_kb(), parse_mode="Markdown")
+            return await callback.message.edit_text(f"🎉 **Монстр повержен!** Вы помогли хосту.\n{drop_msg}", reply_markup=get_town_kb(fresh_user), parse_mode="Markdown")
         return await callback.message.edit_text(f"🎉 **Победа!**\n{drop_msg}\n\nКуда дальше?", reply_markup=get_navigation_kb(dungeon_data), parse_mode="Markdown")
 
 @router.callback_query(F.data.startswith("coop_join_"))
@@ -177,12 +187,11 @@ async def combat_attack(callback: CallbackQuery):
         if host['state'] != 'STATE_COMBAT':
             update_user(user['user_id'], state='STATE_TOWN', combat_data={})
             from handlers.town import get_town_kb
-            return await callback.message.edit_text("Монстр уже мертв. Возврат в город.", reply_markup=get_town_kb())
+            return await callback.message.edit_text("Монстр уже мертв. Возврат в город.", reply_markup=get_town_kb(user))
         enemy_hp = host['combat_data'].get('enemy_hp', 50)
     else:
         enemy_hp = combat.get('enemy_hp', 50)
 
-    # Учет слепоты (шанс промаха 40%)
     if combat.get('debuff_blind', 0) > 0 and random.random() < 0.4:
         log_msg = "👁️ Вы ослеплены и промахнулись!"
     else:
@@ -218,10 +227,11 @@ async def combat_attack(callback: CallbackQuery):
                 user['hp'] -= counter_dmg
                 log_msg += f"\n⚔️ Враг контратакует! (-{counter_dmg} ХП)"
                 if user['hp'] <= 0:
+                    track_stat(user['user_id'], 'deaths_count', 1)
                     apply_death_penalty(user['user_id'], user.get('dungeon_data', {}))
                     update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
                     from handlers.town import get_town_kb
-                    return await callback.message.edit_text("☠️ **Вы убиты!** Все собранные вещи утеряны.", reply_markup=get_town_kb(), parse_mode="Markdown")
+                    return await callback.message.edit_text("☠️ **Вы убиты!** Все собранные вещи утеряны.", reply_markup=get_town_kb(user), parse_mode="Markdown")
 
     if 'coop_host' in combat:
         host = get_user(combat['coop_host'])
@@ -261,12 +271,11 @@ async def combat_end_turn(callback: CallbackQuery):
         if host['state'] != 'STATE_COMBAT':
             update_user(user['user_id'], state='STATE_TOWN', combat_data={})
             from handlers.town import get_town_kb
-            return await callback.message.edit_text("Монстр мертв. Возврат в город.", reply_markup=get_town_kb())
+            return await callback.message.edit_text("Монстр мертв. Возврат в город.", reply_markup=get_town_kb(user))
         combat['enemy_hp'] = host['combat_data'].get('enemy_hp', 50)
 
     log_parts = []
 
-    # 1. ТИКИ ДОТОВ ПО ВРАГУ
     dot_dmg = 0
     if combat.get('dot_burn', 0) > 0:
         dot_dmg += 15
@@ -290,7 +299,6 @@ async def combat_end_turn(callback: CallbackQuery):
                 update_user(host['user_id'], combat_data=host['combat_data'])
             return await handle_combat_victory(callback, user['user_id'], combat)
 
-    # 2. АТАКА МОНСТРА
     if combat.get('enemy_stun', 0) > 0:
         combat['enemy_stun'] -= 1
         log_parts.append("💫 Враг оглушен/спит и пропускает атаку!")
@@ -323,7 +331,6 @@ async def combat_end_turn(callback: CallbackQuery):
             if combat.get('debuff_vuln', 0) > 0:
                 raw_dmg = int(raw_dmg * 1.25)
 
-            # ПРИМЕНЕНИЕ ФОРМУЛЫ БРОНИ С КАПОМ 75%
             monster_dmg = calculate_damage_received(raw_dmg, total_armor)
             user['hp'] -= monster_dmg
             log_parts.append(f"Враг ударил на {monster_dmg} урона.")
@@ -332,7 +339,6 @@ async def combat_end_turn(callback: CallbackQuery):
                 user['hp'] -= 10
                 log_parts.append("🟢 Отравление! (-10 ХП)")
 
-    # 3. ТИКИ БАФФОВ И ДЕБАФФОВ ГЕРОЯ
     for buff_t in ['buff_armor_t', 'buff_str_t', 'buff_dodge_t', 'debuff_blind', 'debuff_fragile', 'debuff_vuln']:
         if combat.get(buff_t, 0) > 0:
             combat[buff_t] -= 1
@@ -341,10 +347,11 @@ async def combat_end_turn(callback: CallbackQuery):
                 combat[attr] = 0
 
     if user['hp'] <= 0:
+        track_stat(user['user_id'], 'deaths_count', 1)
         apply_death_penalty(user['user_id'], user.get('dungeon_data', {}))
         update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
         from handlers.town import get_town_kb
-        return await callback.message.edit_text("☠️ **Вы убиты!** Все собранные вещи утеряны.", reply_markup=get_town_kb(), parse_mode="Markdown")
+        return await callback.message.edit_text("☠️ **Вы убиты!** Все собранные вещи утеряны.", reply_markup=get_town_kb(user), parse_mode="Markdown")
 
     combat['ap'] = 3
     if 'coop_host' in combat:
@@ -403,7 +410,7 @@ async def execute_drink_combat(callback: CallbackQuery):
         if host['state'] != 'STATE_COMBAT':
             update_user(user['user_id'], state='STATE_TOWN', combat_data={})
             from handlers.town import get_town_kb
-            return await callback.message.edit_text("Монстр уже мертв. Возврат в город.", reply_markup=get_town_kb())
+            return await callback.message.edit_text("Монстр уже мертв. Возврат в город.", reply_markup=get_town_kb(user))
         combat['enemy_hp'] = host['combat_data'].get('enemy_hp', 50)
 
     p_lower = used_item.lower()
@@ -428,7 +435,6 @@ async def execute_drink_combat(callback: CallbackQuery):
             note = " 🛡️ Сопротивление (-50% урона)."
         return int(base_val * multiplier), note
 
-    # 1. Восстановление и баффы героя
     if "рагу" in p_lower:
         heal = int(user['max_hp'] * 0.35)
         user['hp'] = min(user['max_hp'], user['hp'] + heal)
@@ -458,7 +464,6 @@ async def execute_drink_combat(callback: CallbackQuery):
         combat['debuff_vuln'] = 0
         log_msg += "✨ Очищение: все негативные эффекты сняты!\n"
 
-    # 2. Боевые стихии с учетом РЕЗИСТОВ и ИММУНИТЕТОВ
     if "урон огнем" in p_lower:
         dmg, note = calc_element_dmg(30 + user.get('level', 1) * 5, "fire")
         if dmg > 0:
@@ -531,7 +536,6 @@ async def execute_drink_combat(callback: CallbackQuery):
         combat['enemy_stun'] = 1
         log_msg += "💫 Враг парализован и пропустит следующий ход!\n"
 
-    # 3. Экономика
     if "богатство" in p_lower or "удача" in p_lower:
         gold_b = random.randint(30, 80)
         user['gold'] += gold_b
@@ -541,7 +545,6 @@ async def execute_drink_combat(callback: CallbackQuery):
         update_user(user['user_id'], dungeon_data=dungeon_data)
         log_msg += f"💰 Превращение в золото: +{gold_b} 🪙!\n"
 
-    # 4. Побочки
     if "слабость" in p_lower or "ожог" in p_lower or "болезнь" in p_lower or "удушье" in p_lower:
         user['hp'] -= 15
         log_msg += "🤢 Побочный эффект: ожог пищевода (-15 ХП)!\n"
@@ -561,10 +564,11 @@ async def execute_drink_combat(callback: CallbackQuery):
         update_user(host['user_id'], combat_data=host['combat_data'])
 
     if user['hp'] <= 0:
+        track_stat(user['user_id'], 'deaths_count', 1)
         apply_death_penalty(user['user_id'], user.get('dungeon_data', {}))
         update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
         from handlers.town import get_town_kb
-        return await callback.message.edit_text("☠️ **Вы погибли от побочного эффекта зелья!**", reply_markup=get_town_kb(), parse_mode="Markdown")
+        return await callback.message.edit_text("☠️ **Вы погибли от побочного эффекта зелья!**", reply_markup=get_town_kb(user), parse_mode="Markdown")
 
     if combat.get('enemy_hp', 50) <= 0:
         return await handle_combat_victory(callback, user['user_id'], combat)
@@ -576,21 +580,30 @@ async def execute_drink_combat(callback: CallbackQuery):
 async def combat_flee(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🏃‍♂️ ДА, СБЕЖАТЬ", callback_data="combat_act_flee_confirm")],
-        [InlineKeyboardButton(text="⚔️ НЕТ, В БОЙ!", callback_data="combat_act_flee_cancel")]
+        [InlineKeyboardButton(text="❌ НЕТ, ОСТАТЬСЯ", callback_data="combat_act_flee_cancel")]
     ])
     await callback.message.edit_text("⚠️ **Вы уверены?**\nПри побеге вы потеряете часть золота и лута из этого рейда!", reply_markup=kb, parse_mode="Markdown")
 
 @router.callback_query(F.data == "combat_act_flee_confirm")
 async def combat_flee_confirm(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
+    track_stat(user['user_id'], 'flees_count', 1)
     lost_gold, lost_mats = apply_flee_penalty(user['user_id'], user.get('dungeon_data', {}))
     update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
     from handlers.town import get_town_kb
     mats_str = f" и {', '.join(lost_mats)}" if lost_mats else ""
-    await callback.message.edit_text(f"🏃‍♂️ Вы сбежали! Потеряно из рейда: **{lost_gold} золота**{mats_str}.", reply_markup=get_town_kb(), parse_mode="Markdown")
+    await callback.message.edit_text(f"🏃‍♂️ Вы сбежали! Потеряно из рейда: **{lost_gold} золота**{mats_str}.", reply_markup=get_town_kb(user), parse_mode="Markdown")
 
 @router.callback_query(F.data == "combat_act_flee_cancel")
 async def combat_flee_cancel(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
-    combat = user.get('combat_data', {})
-    await render_combat(callback, user, combat, "Вы решили остаться и драться!")
+    
+    # Если мы находимся в бою — возвращаем интерфейс боя
+    if user.get('state') == 'STATE_COMBAT':
+        combat = user.get('combat_data', {})
+        await render_combat(callback, user, combat, "Вы решили остаться и драться!")
+    else:
+        # Если мы находимся на развилке в коридоре — возвращаем развилку
+        d_data = user.get('dungeon_data', {})
+        from handlers.dungeon import get_navigation_kb
+        await callback.message.edit_text("Вы передумали сбегать и продолжили путь.", reply_markup=get_navigation_kb(d_data), parse_mode="Markdown")

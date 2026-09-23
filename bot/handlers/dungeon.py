@@ -1,194 +1,255 @@
 import random
-import datetime
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from database import get_user, update_user, get_today_dungeon, get_mob_by_name, get_item, get_item_name, get_loot_table, apply_flee_penalty, apply_death_penalty
-from utils.generators import generate_emoji_puzzle, generate_dungeon_graph
+from database import (
+    get_user, update_user, consume_energy, get_today_dungeon,
+    get_all_war_regions, get_scaled_mob, track_stat, get_energy_settings
+)
+from utils.generators import generate_dungeon_graph
 
 router = Router()
 
-def get_navigation_kb(dungeon_data):
-    current_node_id = dungeon_data["current_node"]
-    graph = dungeon_data["nodes"]
-    current_node = graph[current_node_id]
+def get_navigation_kb(dungeon_data: dict):
+    curr = dungeon_data.get("current_node")
+    next_nodes = dungeon_data.get("nodes", {}).get(curr, {}).get("next", [])
     buttons = []
-    row = []
-    type_icons = {"combat": "⚔️ Враг", "puzzle": "🧩 Загадка", "treasure": "💰 Тайник", "campfire": "🏕️ Привал", "boss": "👹 БОСС", "empty": "🕸 Пустота"}
-    
-    for next_id in current_node["next"]:
-        next_room = graph[next_id]
-        icon = type_icons.get(next_room["type"], "🚪 Дверь")
-        row.append(InlineKeyboardButton(text=icon, callback_data=f"dung_go_{next_id}"))
-        if len(row) == 2:
-            buttons.append(row)
-            row = []
-    if row: buttons.append(row)
-    buttons.append([InlineKeyboardButton(text="🏃‍♂️ Сбежать (штраф)", callback_data="dungeon_flee")])
+
+    type_labels = {
+        "combat": "⚔️ Враг",
+        "boss": "💀 БОСС",
+        "campfire": "🏕️ Костёр (Привал)",
+        "puzzle": "🧩 Загадка",
+        "treasure": "📦 Сундук",
+        "empty": "💨 Пустой зал"
+    }
+
+    for nxt in next_nodes:
+        n_info = dungeon_data["nodes"].get(nxt, {})
+        n_type = n_info.get("type", "empty")
+        label = type_labels.get(n_type, "🚪 Проход")
+        buttons.append([InlineKeyboardButton(text=f"Вперёд: {label}", callback_data=f"dungeon_go_{nxt}")])
+
+    # ВОЗВРАЩАЕМ КНОПКУ ПОБЕГА НА РАЗВИЛКАХ!
+    if next_nodes:
+        buttons.append([InlineKeyboardButton(text="🏃‍♂️ Сбежать с добычей", callback_data="combat_act_flee")])
+
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def get_dungeon_config(dungeon_type):
-    if dungeon_type == "event": return get_today_dungeon()
-    return {"name": "🗿 Руины Забытых Богов", "desc": "Скрытый под землей древний храм.", "mobs": ["temple_guard", "living_idol", "poison_slime"], "boss_id": "time_keeper", "mob_modifier": 1.0}
+@router.callback_query(F.data == "town_dungeon_menu")
+async def select_dungeon_mode(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
+    e_cfg = get_energy_settings(user.get('level', 1))
 
-@router.callback_query(F.data == "town_raids")
-async def show_raids_menu(callback: CallbackQuery):
+    solo_badge = f" ({e_cfg['cost_solo']} ⚡)" if e_cfg['cost_solo'] > 0 else ""
+    event_badge = f" ({e_cfg['cost_event']} ⚡)" if e_cfg['cost_event'] > 0 else ""
+    war_badge = f" ({e_cfg['cost_war']} ⚡)" if e_cfg['cost_war'] > 0 else ""
+
+    text = (
+        "⚔️ **Экспедиции и Военный Совет**\n\n"
+        "Выберите направление вылазки:\n\n"
+        "🏛️ **Одиночный рейд** — исследование руин, привалы у костра, добыча руды.\n"
+        "📅 **Ежедневный данж** — опасный поход к боссу дня за уникальным лутом.\n"
+        "🌍 **Война за Камарию** — совместное освобождение 7 регионов от демонов!"
+    )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚶 Соло Рейд", callback_data="dungeon_start_solo")],
-        [InlineKeyboardButton(text="📅 Ивентовый Данж", callback_data="dungeon_start_event")],
+        [InlineKeyboardButton(text=f"🏛️ Одиночный рейд{solo_badge}", callback_data="dungeon_start_solo")],
+        [InlineKeyboardButton(text=f"📅 Ежедневный данж{event_badge}", callback_data="dungeon_start_event")],
+        [InlineKeyboardButton(text=f"🌍 Война за Камарию{war_badge}", callback_data="war_hub")],
         [InlineKeyboardButton(text="🔙 В лагерь", callback_data="town_back")]
     ])
-    await callback.message.edit_text("⚔️ **Доска Рейдов**\nВыберите экспедицию.", reply_markup=kb, parse_mode="Markdown")
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
-@router.callback_query(F.data.startswith("dungeon_start_"))
-async def enter_dungeon(callback: CallbackQuery):
-    dungeon_type = callback.data.split("_")[-1]
-    dungeon_data = generate_dungeon_graph(dungeon_type)
-    dungeon_data["gathered_gold"] = 0
-    dungeon_data["gathered_materials"] = {}
-    dungeon_data["gathered_equipment"] = []
-    
-    update_user(callback.from_user.id, state='STATE_DUNGEON', dungeon_data=dungeon_data)
-    config = get_dungeon_config(dungeon_type)
-    await callback.message.edit_text(f"**{config['name']}**\n{config['desc']}\n\nВы у входа. Изучите карту.", reply_markup=get_navigation_kb(dungeon_data), parse_mode="Markdown")
-
-@router.callback_query(F.data.startswith("dung_go_"))
-async def next_room(callback: CallbackQuery):
+@router.callback_query(F.data == "dungeon_start_solo")
+async def start_solo_dungeon(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
-    if user['state'] != 'STATE_DUNGEON': return await callback.answer("Вы не в подземелье!", show_alert=True)
-    next_node_id = callback.data.replace("dung_go_", "")
-    dungeon_data = user['dungeon_data']
-    dungeon_data["current_node"] = next_node_id
-    current_room = dungeon_data["nodes"][next_node_id]
-    event = current_room["type"]
-    dungeon_config = get_dungeon_config(dungeon_data.get("dungeon_type", "solo"))
-    
-    if event in ["combat", "boss"]:
-        if event == "boss":
-            mob_stats = get_mob_by_name(dungeon_config.get('boss_id', 'time_keeper'))
-            modifier = dungeon_config.get('mob_modifier', 1.0) * 1.5
-        else:
-            mob_stats = get_mob_by_name(random.choice(dungeon_config['mobs']))
-            modifier = dungeon_config.get('mob_modifier', 1.0)
-            
-        enemy_hp = int(random.randint(mob_stats['hp_min'], mob_stats['hp_max']) * modifier)
-        start_dist = "close" if mob_stats['row_pref'] == "front" else "far"
-            
+    e_cfg = get_energy_settings(user.get('level', 1))
+    cost = e_cfg["cost_solo"]
+
+    if not consume_energy(user['user_id'], cost):
+        return await callback.answer(f"Недостаточно энергии (нужно {cost} ⚡)!", show_alert=True)
+
+    mobs = ["temple_guard", "living_idol", "khmer_priest", "poison_slime"]
+    d_data = generate_dungeon_graph(dungeon_type="solo", mobs_pool=mobs, boss_id="temple_guard")
+    update_user(user['user_id'], state='STATE_DUNGEON', dungeon_data=d_data)
+    await enter_node(callback, user, d_data, d_data["current_node"])
+
+@router.callback_query(F.data == "dungeon_start_event")
+async def start_event_dungeon(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
+    today = get_today_dungeon()
+    if not today:
+        return await callback.answer("Сегодня подземелье закрыто!", show_alert=True)
+
+    e_cfg = get_energy_settings(user.get('level', 1))
+    cost = e_cfg["cost_event"]
+
+    if not consume_energy(user['user_id'], cost):
+        return await callback.answer(f"Недостаточно энергии (нужно {cost} ⚡)!", show_alert=True)
+
+    d_data = generate_dungeon_graph(dungeon_type="event", mobs_pool=today["mobs"], boss_id=today["boss_id"])
+    update_user(user['user_id'], state='STATE_DUNGEON', dungeon_data=d_data)
+    await enter_node(callback, user, d_data, d_data["current_node"])
+
+@router.callback_query(F.data == "war_hub")
+async def show_war_fronts(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
+    regions = get_all_war_regions()
+    e_cfg = get_energy_settings(user.get('level', 1))
+    cost_badge = f" ({e_cfg['cost_war']} ⚡)" if e_cfg['cost_war'] > 0 else ""
+
+    text = (
+        "🌍 **Фронты Освобождения Камарии**\n"
+        "Каждая победа приближает регион к полной свободе!\n\n"
+    )
+    buttons = []
+    for r in regions:
+        filled = int(r['pct'] // 10)
+        bar = "█" * filled + "░" * (10 - filled)
+        status = "✨ ОСВОБОЖДЕН" if r['is_liberated'] else f"[{bar}] {r['pct']}%"
+        text += f"**{r['name']}**\n└ {status} ({r['current']:,} / {r['target']:,})\n"
+        btn_label = f"⚔️ В бой: {r['name']}{cost_badge}" if not r['is_liberated'] else f"🛡️ Зачищен: {r['name']}"
+        buttons.append([InlineKeyboardButton(text=btn_label, callback_data=f"war_enter:{r['id']}")])
+
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="town_dungeon_menu")])
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
+
+@router.callback_query(F.data.startswith("war_enter:"))
+async def enter_war_region(callback: CallbackQuery):
+    reg_id = int(callback.data.split(":")[1])
+    user = get_user(callback.from_user.id)
+    e_cfg = get_energy_settings(user.get('level', 1))
+    cost = e_cfg["cost_war"]
+
+    if not consume_energy(user['user_id'], cost):
+        return await callback.answer(f"Недостаточно энергии (нужно {cost} ⚡)!", show_alert=True)
+
+    regions = get_all_war_regions()
+    region = next((r for r in regions if r['id'] == reg_id), None)
+
+    d_data = generate_dungeon_graph(dungeon_type="war", mobs_pool=region['mobs'], boss_id=region['boss_id'])
+    d_data['war_region_id'] = reg_id
+    update_user(user['user_id'], state='STATE_DUNGEON', dungeon_data=d_data)
+    await enter_node(callback, user, d_data, d_data["current_node"])
+
+@router.callback_query(F.data.startswith("dungeon_go_"))
+async def go_to_node(callback: CallbackQuery):
+    target_node = callback.data.replace("dungeon_go_", "")
+    user = get_user(callback.from_user.id)
+    d_data = user.get('dungeon_data', {})
+    d_data["current_node"] = target_node
+    update_user(user['user_id'], dungeon_data=d_data)
+    await enter_node(callback, user, d_data, target_node)
+
+async def enter_node(callback: CallbackQuery, user: dict, d_data: dict, node_id: str):
+    node = d_data["nodes"][node_id]
+    n_type = node["type"]
+
+    if n_type == "empty" and not d_data.get("nodes", {}).get(node_id, {}).get("next"):
+        text = "🚪 **Вы перешагнули порог подземелья.** Впереди развилка. Выберите дальнейший путь:"
+        await callback.message.edit_text(text, reply_markup=get_navigation_kb(d_data), parse_mode="Markdown")
+
+    elif n_type in ["combat", "boss"]:
+        mob_id = node.get("mob_id", "temple_guard")
+        player_lvl = user.get('level', 1)
+        mob = get_scaled_mob(mob_id, player_lvl=player_lvl)
+        m_hp = random.randint(mob['hp_min'], mob['hp_max'])
+
         combat_data = {
-            "enemy_name": mob_stats['name'], "enemy_hp": enemy_hp, "enemy_max_hp": enemy_hp, 
-            "dmg_min": int(mob_stats['dmg_min'] * modifier), "dmg_max": int(mob_stats['dmg_max'] * modifier), 
-            "gold_min": mob_stats.get('gold_min', 5), "gold_max": mob_stats.get('gold_max', 15), "xp_reward": mob_stats.get('xp_reward', 10),
-            "mob_modifier": modifier,
-            "ap": 3, "distance": start_dist, "mob_pref": mob_stats['row_pref'], "mob_skills": mob_stats.get('skills', {})
+            "enemy_id": mob['mob_id'],
+            "enemy_name": mob['name'],
+            "enemy_hp": m_hp,
+            "enemy_max_hp": m_hp,
+            "dmg_min": mob['dmg_min'],
+            "dmg_max": mob['dmg_max'],
+            "mob_pref": mob['row_pref'],
+            "mob_skills": mob['skills'],
+            "gold_min": mob.get('gold_min', 5),
+            "gold_max": mob.get('gold_max', 15),
+            "xp_reward": mob.get('xp_reward', 10),
+            "ap": 3,
+            "distance": "close",
+            "buff_armor": 0, "buff_armor_t": 0,
+            "buff_str": 0, "buff_str_t": 0,
+            "buff_dodge": 0.0, "buff_dodge_t": 0,
+            "dot_burn": 0, "dot_poison": 0, "dot_bleed": 0, "enemy_stun": 0
         }
-        update_user(user['user_id'], state='STATE_COMBAT', combat_data=combat_data, dungeon_data=dungeon_data)
+        update_user(user['user_id'], state='STATE_COMBAT', combat_data=combat_data)
         from handlers.combat import render_combat
-        await render_combat(callback, user, combat_data, f"Впереди {mob_stats['name']}!")
-        
-    elif event == "treasure":
-        location_id = f"event_{datetime.datetime.today().weekday()}" if dungeon_data.get('dungeon_type', 'solo') == "event" else "solo"
-        gold_found = random.randint(20, 50)
-        user['gold'] += gold_found
-        dungeon_data.setdefault("gathered_gold", 0)
-        dungeon_data["gathered_gold"] += gold_found
-        msg = f"💰 **Тайник!** Найдено {gold_found} золота."
-        inv = user['inventory']
-        
-        # УМНАЯ СИСТЕМА ЛУТА ДЛЯ ТАЙНИКОВ
-        loot_table = get_loot_table(location_id)
-        random.shuffle(loot_table) # Перемешиваем лут
-        
-        max_drops = random.randint(3, 5) # В тайниках от 3 до 5 предметов
-        dropped_count = 0
-        
-        for loot in loot_table:
-            if dropped_count >= max_drops:
-                break
-                
-            if random.random() <= min(1.0, loot['chance'] * 2.0):
-                qty = random.randint(loot['min'], loot['max'])
-                item_db = get_item(loot['item_id'])
-                if item_db and item_db['type'] in ["weapon", "armor"]:
-                    for _ in range(qty): 
-                        inv.setdefault("backpack", []).append(loot['item_id'])
-                        dungeon_data.setdefault("gathered_equipment", []).append(loot['item_id'])
-                else:
-                    inv.setdefault("materials", {})[loot['item_id']] = inv.setdefault("materials", {}).get(loot['item_id'], 0) + qty
-                    dungeon_data.setdefault("gathered_materials", {})
-                    dungeon_data["gathered_materials"][loot['item_id']] = dungeon_data["gathered_materials"].get(loot['item_id'], 0) + qty
-                msg += f"\n📦 Внутри: **{get_item_name(loot['item_id'])}** (x{qty})"
-                dropped_count += 1
-                
-        update_user(user['user_id'], gold=user['gold'], inventory=inv, dungeon_data=dungeon_data)
-        await callback.message.edit_text(f"{msg}\n\nДальше...", reply_markup=get_navigation_kb(dungeon_data), parse_mode="Markdown")
-        
-    elif event == "puzzle":
-        puzzle = generate_emoji_puzzle()
-        update_user(user['user_id'], state='STATE_PUZZLE', combat_data={"correct": puzzle["correct"]}, dungeon_data=dungeon_data)
-        buttons = [[InlineKeyboardButton(text=str(opt), callback_data=f"puzzle_ans_{opt}")] for opt in puzzle["options"]]
-        buttons.append([InlineKeyboardButton(text="💥 Разбить дверь (-20% ХП)", callback_data="puzzle_smash")])
-        await callback.message.edit_text(puzzle["text"], reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
-        
-    elif event == "campfire":
-        heal = int(user['max_hp'] * 0.3)
-        new_hp = min(user['max_hp'], user['hp'] + heal)
-        update_user(user['user_id'], hp=new_hp, dungeon_data=dungeon_data)
-        await callback.message.edit_text(f"🏕️ **Привал.** +{heal} ХП.\n\nВпереди слышен рев Босса. Готовы?", reply_markup=get_navigation_kb(dungeon_data), parse_mode="Markdown")
-        
-    elif event == "empty":
-        update_user(user['user_id'], dungeon_data=dungeon_data)
-        await callback.message.edit_text("🕸 **Пустая комната.**\n\nСмотрим карту...", reply_markup=get_navigation_kb(dungeon_data), parse_mode="Markdown")
+        boss_prefix = "💀 **БОСС ЭТОЙ ЗЕМЛИ!** " if n_type == "boss" else ""
+        await render_combat(callback, user, combat_data, f"{boss_prefix}{mob['name']} готовится к атаке!")
 
-@router.callback_query(F.data.startswith("puzzle_"))
-async def solve_puzzle(callback: CallbackQuery):
+    elif n_type == "campfire":
+        heal_amt = int(user['max_hp'] * 0.4)
+        user['hp'] = min(user['max_hp'], user['hp'] + heal_amt)
+        update_user(user['user_id'], hp=user['hp'])
+        text = (
+            f"🏕️ **Тёплый Костёр (Привал)**\n\n"
+            f"Вы перевели дух у потрескивающего пламени и перевязали раны.\n"
+            f"❤️ Восстановлено **+{heal_amt} ХП** (Здоровье: {user['hp']}/{user['max_hp']}).\n\n"
+            "Впереди решающая битва. Куда направитесь дальше?"
+        )
+        await callback.message.edit_text(text, reply_markup=get_navigation_kb(d_data), parse_mode="Markdown")
+
+    elif n_type == "treasure":
+        gold_find = random.randint(35, 80)
+        user['gold'] += gold_find
+        d_data.setdefault('gathered_gold', 0)
+        d_data['gathered_gold'] += gold_find
+        update_user(user['user_id'], gold=user['gold'], dungeon_data=d_data)
+        text = (
+            f"📦 **Тайник в каменной нише!**\n\n"
+            f"Вы сорвали печать и забрали **+{gold_find} 🪙** золота!\n\n"
+            "Выберите следующий поворот:"
+        )
+        await callback.message.edit_text(text, reply_markup=get_navigation_kb(d_data), parse_mode="Markdown")
+
+    elif n_type == "empty":
+        track_stat(user['user_id'], 'empty_rooms', 1)
+        text = "💨 **Заброшенный зал.** Здесь тишина, вековая пыль и каменные обломки.\n\nПродолжайте исследовать:"
+        await callback.message.edit_text(text, reply_markup=get_navigation_kb(d_data), parse_mode="Markdown")
+
+    elif n_type == "puzzle":
+        p_data = node.get("puzzle")
+        if not p_data:
+            from utils.generators import generate_emoji_puzzle
+            p_data = generate_emoji_puzzle()
+            node["puzzle"] = p_data
+            update_user(user['user_id'], dungeon_data=d_data)
+
+        buttons = []
+        row = []
+        for opt in p_data["options"]:
+            is_correct = (str(opt) == str(p_data["correct"]))
+            cb = "riddle_ans_correct" if is_correct else "riddle_ans_wrong"
+            row.append(InlineKeyboardButton(text=str(opt), callback_data=cb))
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+
+        await callback.message.edit_text(p_data["text"], reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
+
+@router.callback_query(F.data == "riddle_ans_correct")
+async def riddle_correct(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
-    if user['state'] != 'STATE_PUZZLE': return await callback.answer("Ошибка стейта!", show_alert=True)
-    action = callback.data.replace("puzzle_", "")
-    dungeon_data = user['dungeon_data']
-    
-    if action == "smash":
-        dmg = int(user['max_hp'] * 0.20)
-        if user['hp'] - dmg <= 0:
-            apply_death_penalty(user['user_id'], dungeon_data)
-            update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
-            from handlers.town import get_town_kb
-            return await callback.message.edit_text("☠️ Шип ловушки убил вас... Все собранные вещи утеряны.", reply_markup=get_town_kb(), parse_mode="Markdown")
-        update_user(user['user_id'], state='STATE_DUNGEON', hp=user['hp']-dmg, combat_data={})
-        await callback.message.edit_text(f"💥 Вы выбили дверь! Урон: {dmg}.\nСмотрим карту...", reply_markup=get_navigation_kb(dungeon_data), parse_mode="Markdown")
-            
-    elif action.startswith("ans_"):
-        if int(action.split("_")[1]) == user.get('combat_data', {}).get("correct"):
-            heal = int(user['max_hp'] * 0.15)
-            update_user(user['user_id'], state='STATE_DUNGEON', hp=min(user['max_hp'], user['hp'] + heal), combat_data={})
-            await callback.message.edit_text(f"✨ **Верно!** +{heal} ХП.\nСмотрим карту...", reply_markup=get_navigation_kb(dungeon_data), parse_mode="Markdown")
-        else:
-            dmg = int(user['max_hp'] * 0.30)
-            if user['hp'] - dmg <= 0:
-                apply_death_penalty(user['user_id'], dungeon_data)
-                update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
-                from handlers.town import get_town_kb
-                return await callback.message.edit_text("☠️ Адское пламя сожгло вас... Все собранные вещи утеряны.", reply_markup=get_town_kb(), parse_mode="Markdown")
-            update_user(user['user_id'], state='STATE_DUNGEON', hp=user['hp']-dmg, combat_data={})
-            await callback.message.edit_text(f"❌ **Ошибка!** Урон: {dmg}!\nСмотрим карту...", reply_markup=get_navigation_kb(dungeon_data), parse_mode="Markdown")
+    track_stat(user['user_id'], 'riddles_solved', 1)
+    d_data = user.get('dungeon_data', {})
+    reward = random.randint(35, 75)
+    user['gold'] += reward
+    d_data.setdefault('gathered_gold', 0)
+    d_data['gathered_gold'] += reward
+    update_user(user['user_id'], gold=user['gold'], dungeon_data=d_data)
+    text = f"✨ **Загадка решена верно! Стела сдвинулась!**\nВы открыли скрытый тайник и получили **+{reward} 🪙** золота."
+    await callback.message.edit_text(text, reply_markup=get_navigation_kb(d_data), parse_mode="Markdown")
 
-@router.callback_query(F.data == "dungeon_flee")
-async def flee_dungeon(callback: CallbackQuery):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏃‍♂️ ДА, СБЕЖАТЬ", callback_data="dungeon_flee_confirm")],
-        [InlineKeyboardButton(text="🗺️ НЕТ, ИДЕМ ДАЛЬШЕ", callback_data="dungeon_flee_cancel")]
-    ])
-    await callback.message.edit_text("⚠️ **Вы уверены?**\nПри побеге вы потеряете часть золота и материалов из этого рейда!", reply_markup=kb, parse_mode="Markdown")
-
-@router.callback_query(F.data == "dungeon_flee_confirm")
-async def flee_dungeon_confirm(callback: CallbackQuery):
+@router.callback_query(F.data == "riddle_ans_wrong")
+async def riddle_wrong(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
-    lost_gold, lost_mats = apply_flee_penalty(user['user_id'], user.get('dungeon_data', {}))
-    update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
-    from handlers.town import get_town_kb
-    mats_str = f" и {', '.join(lost_mats)}" if lost_mats else ""
-    await callback.message.edit_text(f"🏃‍♂️ Вы сбежали! Потеряно из рейда: **{lost_gold} золота**{mats_str}.", reply_markup=get_town_kb(), parse_mode="Markdown")
-
-@router.callback_query(F.data == "dungeon_flee_cancel")
-async def flee_dungeon_cancel(callback: CallbackQuery):
-    user = get_user(callback.from_user.id)
-    dungeon_data = user.get('dungeon_data', {})
-    await callback.message.edit_text("Вы передумали бежать.\n\nКуда дальше?", reply_markup=get_navigation_kb(dungeon_data), parse_mode="Markdown")
+    track_stat(user['user_id'], 'riddles_failed', 1)
+    d_data = user.get('dungeon_data', {})
+    trap_dmg = 15
+    user['hp'] = max(1, user['hp'] - trap_dmg)
+    update_user(user['user_id'], hp=user['hp'])
+    text = f"⚡ **Неверный ответ! Сработала руна защиты!**\nЛовушка нанесла **-{trap_dmg} ХП** урона."
+    await callback.message.edit_text(text, reply_markup=get_navigation_kb(d_data), parse_mode="Markdown")
