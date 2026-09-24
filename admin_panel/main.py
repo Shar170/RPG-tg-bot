@@ -47,6 +47,9 @@ def get_conn():
     except: pass
     try: conn.execute("CREATE TABLE IF NOT EXISTS game_settings (key TEXT PRIMARY KEY, value TEXT)")
     except: pass
+    # Создание таблицы скинов, если её нет
+    try: conn.execute("CREATE TABLE IF NOT EXISTS home_skins (skin_id TEXT PRIMARY KEY, name TEXT, type TEXT, price INTEGER DEFAULT 0, requirements TEXT DEFAULT '{}', desc TEXT DEFAULT '')")
+    except: pass
     conn.commit()
     return conn
 
@@ -127,14 +130,15 @@ with st.sidebar:
 # ОСНОВНОЙ ИНТЕРФЕЙС ВКЛАДОК
 # ==========================================
 st.title("🛡️ Kamaria RPG — Панель Управления")
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "🦇 Бестиарий", 
     "👥 Игроки", 
     "🏰 Кланы",
     "📖 Рецепты и Алхимия",
     "💻 SQL Запросы",
     "📊 Таблицы БД",
-    "💾 Экспорт SQL"
+    "💾 Экспорт SQL",
+    "🏡 Скины Дома"
 ])
 
 # --- ВКЛАДКА 1: БЕСТИАРИЙ ---
@@ -474,7 +478,7 @@ with tab5:
 
 # --- ВКЛАДКА 6: ТАБЛИЦЫ БД ---
 with tab6:
-    pks = {"game_settings": "key", "loot_tables": "id", "items": "item_id", "daily_dungeons": "day_index", "recipes": "recipe_id", "clans": "clan_id", "alchemy_ingredients": "item_id"}
+    pks = {"game_settings": "key", "loot_tables": "id", "items": "item_id", "daily_dungeons": "day_index", "recipes": "recipe_id", "clans": "clan_id", "alchemy_ingredients": "item_id", "home_skins": "skin_id"}
     table_to_edit = st.selectbox("Таблица:", list(pks.keys()))
     df = fetch_table(table_to_edit)
     edited = st.data_editor(df, num_rows="dynamic", use_container_width=True, key=f"tbl_{table_to_edit}")
@@ -541,4 +545,48 @@ with tab7:
         with st.expander("👀 Предпросмотр сгенерированного SQL (первые 100 строк)"):
             preview_lines = "\n".join(st.session_state['exported_sql'].splitlines()[:100])
             st.code(preview_lines, language="sql")
+
+# --- ВКЛАДКА 8: СКИНЫ ДОМА ---
+with tab8:
+    st.subheader("🏡 Управление скинами для дома")
+    st.markdown("Добавляйте, редактируйте и настраивайте требования для получения новых визуальных стилей в домах игроков.")
+    
+    skins_df = fetch_table("home_skins")
+    if not skins_df.empty:
+        st.dataframe(skins_df, use_container_width=True)
+    else:
+        st.info("В базе данных пока нет ни одного скина.")
+        
+    with st.expander("➕ Создать / Изменить скин"):
+        with st.form("skin_editor_form"):
+            c1, c2 = st.columns(2)
+            new_skin_id = c1.text_input("ID Скина (уникальный)", placeholder="aztec_ziggurat")
+            new_skin_name = c2.text_input("Название скина", placeholder="Ацтекский алтарь")
+            
+            c3, c4 = st.columns(2)
+            new_skin_type = c3.selectbox("Тип получения", ["free", "gold", "gems", "achievement"])
+            new_skin_price = c4.number_input("Цена (золото/кристаллы)", min_value=0, value=0)
+            
+            c5, c6 = st.columns(2)
+            new_skin_req = c5.text_input("Требования для achievement (JSON)", value='{}', help='Пример: {"req_title": "Герой Камарии"}')
+            new_skin_desc = c6.text_input("Описание требования (для меню)", placeholder="Титул 'Герой Камарии'")
+            
+            if st.form_submit_button("💾 Сохранить скин"):
+                if not new_skin_id or not new_skin_name:
+                    st.error("ID Скина и Название не могут быть пустыми!")
+                else:
+                    try:
+                        json.loads(new_skin_req)
+                        with get_conn() as conn:
+                            conn.execute("""
+                                INSERT OR REPLACE INTO home_skins (skin_id, name, type, price, requirements, desc)
+                                VALUES (?, ?, ?, ?, ?, ?)
+                            """, (new_skin_id.strip(), new_skin_name.strip(), new_skin_type, int(new_skin_price), new_skin_req.strip(), new_skin_desc.strip()))
+                            conn.commit()
+                        st.success(f"Скин '{new_skin_name}' успешно сохранен!")
+                        st.rerun()
+                    except json.JSONDecodeError:
+                        st.error("Ошибка: Требования должны быть валидным JSON объектом!")
+                    except Exception as e:
+                        st.error(f"Произошла ошибка базы данных: {e}")
 

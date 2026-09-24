@@ -71,6 +71,11 @@ def init_db():
             match_id INTEGER PRIMARY KEY AUTOINCREMENT, p1_id INTEGER, p2_id INTEGER, 
             p1_hp INTEGER, p2_hp INTEGER, p1_max INTEGER, p2_max INTEGER, 
             p1_ap INTEGER, p2_ap INTEGER, turn INTEGER, log TEXT, match_state TEXT DEFAULT '{}', last_action_time REAL DEFAULT 0)''')
+            
+        # --- ТАБЛИЦА СКИНОВ ДОМА ---
+        cursor.execute('''CREATE TABLE IF NOT EXISTS home_skins (
+            skin_id TEXT PRIMARY KEY, name TEXT, type TEXT, price INTEGER DEFAULT 0, requirements TEXT DEFAULT '{}', desc TEXT DEFAULT '')''')
+            
         conn.commit()
 
 def add_global_event(text: str):
@@ -174,6 +179,16 @@ def seed_all():
             ("clan_create_cost_gold", "0")
         ]
         cursor.executemany("INSERT OR REPLACE INTO game_settings VALUES (?, ?)", settings)
+        
+        skins = [
+            ("base", "Базовый шатер", "free", 0, "{}", ""),
+            ("cozy_wood", "Уютная лесная хижина", "gold", 5000, "{}", ""),
+            ("painted_diorama", "Расписная диорама (Low-poly)", "gems", 100, "{}", "Уютный фэнтези-стиль с теплыми земляными тонами"),
+            ("khmer_ruins", "Руины кхмерского храма", "achievement", 0, json.dumps({"req_bosses": 20}), "Убить 20 боссов"),
+            ("aztec_ziggurat", "Ацтекский алтарь", "achievement", 0, json.dumps({"req_title": "Герой Камарии"}), "Титул 'Герой Камарии'"),
+            ("clan_fort", "Цитадель Братства", "achievement", 0, json.dumps({"req_clan_lvl": 20}), "Клан 20+ уровня")
+        ]
+        cursor.executemany("INSERT OR REPLACE INTO home_skins VALUES (?, ?, ?, ?, ?, ?)", skins)
 
         war_regions_seed = [
             (1, "🔥 Долина Пепла", "Выжженная земля под властью огненных демонов.", 100000, 0, 0, "fire_lord", json.dumps(["magma_slime", "cultist_fanatic"])),
@@ -265,6 +280,24 @@ def seed_all():
         conn.commit()
         
         seed_bots()
+
+def get_all_home_skins() -> dict:
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT skin_id, name, type, price, requirements, desc FROM home_skins")
+        rows = cursor.fetchall()
+        skins = {}
+        for row in rows:
+            reqs = json.loads(row[4]) if row[4] else {}
+            skin_data = {
+                "name": row[1],
+                "type": row[2],
+                "price": row[3],
+                "desc": row[5]
+            }
+            skin_data.update(reqs) 
+            skins[row[0]] = skin_data
+        return skins
 
 def check_and_distribute_weekly_clan_rewards():
     today = datetime.date.today()
@@ -418,7 +451,40 @@ def get_user(user_id: int):
                     except: u_dict[json_field] = {}
                 else: 
                     u_dict[json_field] = {}
-                
+                    
+            # --- ЛОГИКА РЕГЕНЕРАЦИИ ЭНЕРГИИ ---
+            now = int(time.time())
+            last_time = u_dict.get('last_energy_time', 0)
+            current_energy = u_dict.get('energy', 5)
+            lvl = u_dict.get('level', 1)
+            
+            # Быстро получаем настройки без открытия новых коннектов
+            cursor.execute("SELECT key, value FROM game_settings WHERE key IN ('max_energy', 'energy_regen_seconds')")
+            s_dict = {row[0]: row[1] for row in cursor.fetchall()}
+            
+            base_max = int(s_dict.get("max_energy", "5"))
+            regen_seconds = int(s_dict.get("energy_regen_seconds", "7200"))
+            max_energy = base_max + max(0, lvl // 20)
+            
+            if current_energy < max_energy:
+                if last_time == 0:
+                    cursor.execute("UPDATE users SET last_energy_time = ? WHERE user_id = ?", (now, user_id))
+                    conn.commit()
+                    u_dict['last_energy_time'] = now
+                else:
+                    time_passed = now - last_time
+                    if time_passed >= regen_seconds:
+                        cycles = time_passed // regen_seconds
+                        # Начисляем не больше капа
+                        new_energy = min(max_energy, current_energy + cycles)
+                        # Смещаем время на ровное кол-во циклов, чтобы не терять "секунды в остатке"
+                        new_last_time = last_time + (cycles * regen_seconds)
+                        
+                        cursor.execute("UPDATE users SET energy = ?, last_energy_time = ? WHERE user_id = ?", (new_energy, new_last_time, user_id))
+                        conn.commit()
+                        u_dict['energy'] = new_energy
+                        u_dict['last_energy_time'] = new_last_time
+            
             return u_dict
     return None
 
@@ -433,14 +499,22 @@ def update_user(user_id: int, **kwargs):
 
 def consume_energy(user_id: int, amount: int = 1) -> bool:
     if amount <= 0: return True
-    user = get_user(user_id)
+    user = get_user(user_id) # get_user автоматически обработает реген до траты
     current_energy = user.get('energy', 5)
+    
     if current_energy >= amount:
-        update_user(user_id, energy=current_energy - amount)
+        max_e = get_player_max_energy(user.get('level', 1))
+        new_energy = current_energy - amount
+        
+        # Если до траты энергия была на уровне капа (или перекап от админа),
+        # то при падении ниже капа таймер должен начать тикать ровно с этого момента.
+        if current_energy >= max_e and new_energy < max_e:
+            update_user(user_id, energy=new_energy, last_energy_time=int(time.time()))
+        else:
+            update_user(user_id, energy=new_energy)
         return True
     return False
 
-# --- ОБНОВЛЕННОЕ ПОЛУЧЕНИЕ КЛАНА ---
 def get_clan(clan_id: int):
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -472,7 +546,6 @@ def update_clan(clan_id: int, **kwargs):
             cursor.execute(f"UPDATE clans SET {key} = ? WHERE clan_id = ?", (value, clan_id))
         conn.commit()
 
-# --- КЛАНОВЫЙ ТОРГОВЕЦ (ГЕНЕРАЦИЯ СКИДОК) ---
 def get_clan_merchant_deals(clan_id: int) -> dict:
     clan = get_clan(clan_id)
     if not clan: return {"buy": [], "sell": []}
@@ -480,7 +553,6 @@ def get_clan_merchant_deals(clan_id: int) -> dict:
     today = datetime.datetime.today().strftime('%Y-%m-%d')
     m_data = clan.get('merchant_data', {})
     
-    # Если данные свежие, возвращаем их
     if m_data.get('date') == today:
         return m_data
         
