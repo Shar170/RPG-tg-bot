@@ -169,19 +169,3 @@ async def cb_town_home_settings(callback: CallbackQuery):
     ])
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
-# --- ТАВЕРНА (ХАБ МИНИ-ИГР) ---
-@router.callback_query(F.data == "town_tavern")
-async def cb_town_tavern(callback: CallbackQuery):
-    text = (
-        "🎲 **Таверна «Хмельной Дракон»**\n\n"
-        "В нос бьет запах жареного мяса и дешевого эля. За дальним столом кто-то ругается из-за ставок.\n"
-        "Трактирщик протирает стакан: *«Сыграем в кости? Или хочешь спуститься в подвал, там какие-то темные шахты...»*"
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⛏️ Шахта 3х3", callback_data="minigame_mine")],
-        [InlineKeyboardButton(text="🔐 Взлом замка", callback_data="minigame_lockpick")],
-        [InlineKeyboardButton(text="🎲 Кости с трактирщиком", callback_data="minigame_dice")],
-        [InlineKeyboardButton(text="🔙 В лагерь", callback_data="town_back")]
-    ])
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-

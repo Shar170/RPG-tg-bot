@@ -8,15 +8,14 @@ router = Router()
 
 def get_tavern_kb(cost: int = 1):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"⛏️ Шахта ({cost} ⚡)", callback_data="mg_mine_start")],
-        [InlineKeyboardButton(text=f"🎲 Кости ({cost} ⚡ + 50🪙)", callback_data="mg_dice_start")],
-        [InlineKeyboardButton(text=f"🔐 Взлом сундука ({cost} ⚡)", callback_data="mg_lock_start")],
+        [InlineKeyboardButton(text=f"⛏️ Шахта", callback_data="mg_mine_start")],
+        [InlineKeyboardButton(text=f"🎲 Кости", callback_data="mg_dice_start")],
+        [InlineKeyboardButton(text=f"🔐 Взлом сундука", callback_data="mg_lock_start")],
         [InlineKeyboardButton(text="🔙 Уйти на площадь", callback_data="town_back")]
     ])
 
 @router.callback_query(F.data == "town_tavern")
 async def open_tavern(callback: CallbackQuery):
-    print(f"[DEBUG] Игрок {callback.from_user.id} заходит в Таверну.")
     await callback.answer()
     
     user = get_user(callback.from_user.id)
@@ -41,16 +40,34 @@ async def open_tavern(callback: CallbackQuery):
             f"Во что будем играть?")
     await callback.message.edit_text(text, reply_markup=get_tavern_kb(e_cfg['cost_minigame']), parse_mode="Markdown")
 
+# ==========================================
 # --- 1. ШАХТА (Раскопки) ---
+# ==========================================
 @router.callback_query(F.data == "mg_mine_start")
 async def mine_start(callback: CallbackQuery):
-    print(f"[DEBUG] Игрок {callback.from_user.id} запускает Шахту.")
+    user = get_user(callback.from_user.id)
+    e_cfg = get_energy_settings(user.get('level', 1))
+    cost = e_cfg["cost_minigame"]
+    
+    text = (
+        "⛏️ **Заброшенная Шахта**\n\n"
+        "Тьма, сырость и звон кирок. Здесь можно найти золото, железо и даже алмазы!\n"
+        "Но будьте осторожны: одно неверное движение, и свод обрушится.\n\n"
+        f"Стоимость спуска: **{cost} ⚡** (Вам дадут 3 кирки для раскопок)."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"⛏ Начать раскопки ({cost} ⚡)", callback_data="mg_mine_play")],
+        [InlineKeyboardButton(text="🔙 Назад в таверну", callback_data="town_tavern")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+
+@router.callback_query(F.data == "mg_mine_play")
+async def mine_play(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     e_cfg = get_energy_settings(user.get('level', 1))
     cost = e_cfg["cost_minigame"]
     
     if not consume_energy(user['user_id'], cost):
-        print(f"[DEBUG] У игрока {callback.from_user.id} нет энергии для Шахты.")
         return await callback.answer(f"Недостаточно энергии (нужно {cost} ⚡)!", show_alert=True)
     
     await callback.answer()
@@ -84,19 +101,17 @@ async def render_mine(callback: CallbackQuery, user: dict):
             buttons.append(row)
             row = []
             
-    buttons.append([InlineKeyboardButton(text="🏃 Уйти из шахты", callback_data="town_tavern")])
+    buttons.append([InlineKeyboardButton(text="🏃 Уйти из шахты", callback_data="mg_mine_start")])
     
     text = f"⛏️ **Заброшенная Шахта**\nОсталось взмахов киркой: **{picks}**\n\nКопайте осторожно, можно наткнуться на обвал!"
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
 
 @router.callback_query(F.data == "mg_mine_noop")
 async def mine_noop(callback: CallbackQuery):
-    # Заглушка, чтобы Телеграм не вешал UI при клике на открытую ячейку
     await callback.answer("Эта ячейка уже раскопана!", show_alert=False)
 
 @router.callback_query(F.data.startswith("mg_mine_dig_"))
 async def mine_dig(callback: CallbackQuery):
-    print(f"[DEBUG] Игрок {callback.from_user.id} копает ячейку {callback.data}.")
     user = get_user(callback.from_user.id)
     idx = int(callback.data.split("_")[-1])
     home = user.get('home_data', {})
@@ -111,9 +126,10 @@ async def mine_dig(callback: CallbackQuery):
     if found == "bomb":
         dmg = int(user.get('max_hp', 100) * 0.2)
         user['hp'] = max(1, user.get('hp', 100) - dmg)
+        home['mine_picks'] = 0 # Сжигаем все оставшиеся попытки
         update_user(user['user_id'], hp=user['hp'], home_data=home)
         await callback.answer(f"💥 ОБВАЛ! Вы потеряли {dmg} ХП!", show_alert=True)
-        return await open_tavern(callback) 
+        return await mine_start(callback) # Выбрасываем в подменю шахты
         
     elif found == "gold":
         reward = random.randint(15, 30)
@@ -133,16 +149,36 @@ async def mine_dig(callback: CallbackQuery):
     update_user(user['user_id'], gold=user.get('gold', 0), gems=user.get('gems', 0), inventory=user.get('inventory', {}), home_data=home)
     
     if home['mine_picks'] == 0:
-        await callback.answer("Кирка сломалась. Возвращаемся в таверну.", show_alert=True)
-        return await open_tavern(callback)
+        await callback.answer("Жила истощилась. Инструменты сломались.", show_alert=True)
+        return await mine_start(callback)
         
     await render_mine(callback, user)
 
 
+# ==========================================
 # --- 2. КОСТИ (Азарт) ---
+# ==========================================
 @router.callback_query(F.data == "mg_dice_start")
 async def dice_start(callback: CallbackQuery):
-    print(f"[DEBUG] Игрок {callback.from_user.id} играет в кости.")
+    user = get_user(callback.from_user.id)
+    e_cfg = get_energy_settings(user.get('level', 1))
+    cost = e_cfg["cost_minigame"]
+    
+    text = (
+        "🎲 **Стол для игры в Кости**\n\n"
+        "Трактирщик хитро улыбается и трясет стаканчик с костями.\n"
+        "Правила просты: у кого больше — тот забирает банк!\n\n"
+        f"Ставка: **50 🪙**\n"
+        f"Стоимость игры: **{cost} ⚡**"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"🎲 Бросить кости ({cost} ⚡ + 50 🪙)", callback_data="mg_dice_play")],
+        [InlineKeyboardButton(text="🔙 Назад в таверну", callback_data="town_tavern")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+
+@router.callback_query(F.data == "mg_dice_play")
+async def dice_play(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     e_cfg = get_energy_settings(user.get('level', 1))
     cost = e_cfg["cost_minigame"]
@@ -172,15 +208,37 @@ async def dice_start(callback: CallbackQuery):
             f"Трактирщик бросил: **{b_roll}**\n\n{msg}")
             
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"🎲 Сыграть еще ({cost}⚡ + 50🪙)", callback_data="mg_dice_start")],
-        [InlineKeyboardButton(text="🔙 В таверну", callback_data="town_tavern")]
+        [InlineKeyboardButton(text=f"🎲 Сыграть еще ({cost} ⚡ + 50 🪙)", callback_data="mg_dice_play")],
+        [InlineKeyboardButton(text="🔙 В подменю костей", callback_data="mg_dice_start")]
     ])
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
+
+# ==========================================
 # --- 3. ВЗЛОМ ЗАМКА (Быки и Коровы) ---
+# ==========================================
 @router.callback_query(F.data == "mg_lock_start")
 async def lock_start(callback: CallbackQuery):
-    print(f"[DEBUG] Игрок {callback.from_user.id} взламывает сундук.")
+    user = get_user(callback.from_user.id)
+    e_cfg = get_energy_settings(user.get('level', 1))
+    cost = e_cfg["cost_minigame"]
+    
+    text = (
+        "🔐 **Взлом древнего сундука**\n\n"
+        "В углу таверны стоит загадочный сундук с цифровым замком.\n"
+        "Нужно угадать 3 неповторяющиеся цифры (от 1 до 9).\n\n"
+        "🟢 — цифра на своем месте\n"
+        "🟡 — цифра есть, но на другом месте\n\n"
+        f"Стоимость попытки: **{cost} ⚡** (Дается 5 отмычек)."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"🔐 Начать взлом ({cost} ⚡)", callback_data="mg_lock_play")],
+        [InlineKeyboardButton(text="🔙 Назад в таверну", callback_data="town_tavern")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+
+@router.callback_query(F.data == "mg_lock_play")
+async def lock_play(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     e_cfg = get_energy_settings(user.get('level', 1))
     cost = e_cfg["cost_minigame"]
@@ -218,14 +276,13 @@ async def render_lock(callback: CallbackQuery, user: dict):
             row = []
     buttons.append([
         InlineKeyboardButton(text="❌ Сброс", callback_data="mg_lock_btn_clear"),
-        InlineKeyboardButton(text="🏃 Уйти", callback_data="town_tavern")
+        InlineKeyboardButton(text="🏃 Уйти", callback_data="mg_lock_start")
     ])
     
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
 
 @router.callback_query(F.data.startswith("mg_lock_btn_"))
 async def lock_input(callback: CallbackQuery):
-    print(f"[DEBUG] Взлом: нажата кнопка {callback.data}.")
     user = get_user(callback.from_user.id)
     btn = callback.data.split("_")[-1]
     home = user.get('home_data', {})
@@ -256,7 +313,10 @@ async def lock_input(callback: CallbackQuery):
             update_user(user['user_id'], gold=user['gold'], gems=user['gems'], inventory=inv)
             text = f"🎉 **СУНДУК ОТКРЫТ!**\nКод был `{secret}`.\n\nВы нашли:\n💰 300 Золота\n💎 3 Алмаза\n🎫 Эпический жетон!"
             await callback.answer()
-            return await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 В таверну", callback_data="town_tavern")]]), parse_mode="Markdown")
+            return await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Сыграть еще", callback_data="mg_lock_start")],
+                [InlineKeyboardButton(text="🔙 В таверну", callback_data="town_tavern")]
+            ]), parse_mode="Markdown")
             
         home['lock_history'] = home.get('lock_history', "") + f"`{guess}` ➡️ 🟢 Точно: {bulls} | 🟡 Рядом: {cows}\n"
         home['lock_attempts'] -= 1
@@ -266,7 +326,10 @@ async def lock_input(callback: CallbackQuery):
             text = f"🔒 **Замок заклинило!**\nПравильный код был `{secret}`.\nОтмычки сломаны."
             update_user(user['user_id'], home_data=home)
             await callback.answer("Вы провалили взлом!", show_alert=True)
-            return await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 В таверну", callback_data="town_tavern")]]), parse_mode="Markdown")
+            return await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Попробовать другой сундук", callback_data="mg_lock_start")],
+                [InlineKeyboardButton(text="🔙 В таверну", callback_data="town_tavern")]
+            ]), parse_mode="Markdown")
             
     update_user(user['user_id'], home_data=home)
     await callback.answer()
