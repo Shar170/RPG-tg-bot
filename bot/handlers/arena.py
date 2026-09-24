@@ -59,9 +59,9 @@ async def arena_join(callback: CallbackQuery):
             opp = get_user(opp_id)
             initial_state = json.dumps({"distance": "close", "p1": {}, "p2": {}})
             cursor.execute("""
-                INSERT INTO pvp_matches (p1_id, p2_id, p1_hp, p2_hp, p1_max, p2_max, p1_ap, p2_ap, turn, log, match_state) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (user['user_id'], opp_id, user['max_hp'], opp['max_hp'], user['max_hp'], opp['max_hp'], 3, 3, user['user_id'], "⚔️ Битва началась!", initial_state))
+                INSERT INTO pvp_matches (p1_id, p2_id, p1_hp, p2_hp, p1_max, p2_max, p1_ap, p2_ap, turn, log, match_state, last_action_time) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (user['user_id'], opp_id, user['max_hp'], opp['max_hp'], user['max_hp'], opp['max_hp'], 3, 3, user['user_id'], "⚔️ Битва началась!", initial_state, time.time()))
             match_id = cursor.lastrowid
             conn.commit()
             
@@ -109,7 +109,10 @@ def render_effects_badge(buffs: dict) -> str:
 
 def get_pvp_kb(is_my_turn: bool, ap: int, distance: str):
     if not is_my_turn:
-        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⏳ Ожидание хода противника...", callback_data="pvp_noop")]])
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⏳ Обновить статус (Проверка AFK)", callback_data="pvp_noop")],
+            [InlineKeyboardButton(text="🏳️ Сдаться", callback_data="pvp_surrender")]
+        ])
     
     move_text = "🏃 Отступить (1 ОД)" if distance == "close" else "⚔️ Сблизиться (1 ОД)"
     
@@ -122,7 +125,21 @@ def get_pvp_kb(is_my_turn: bool, ap: int, distance: str):
 
 @router.callback_query(F.data == "pvp_noop")
 async def pvp_noop(callback: CallbackQuery):
-    await callback.answer("Сейчас ход противника!", show_alert=True)
+    user = get_user(callback.from_user.id)
+    match_id = user.get('combat_data', {}).get('pvp_match_id')
+    match = get_pvp_match(match_id)
+    
+    if not match: 
+        return await callback.answer("Матч не найден!", show_alert=True)
+        
+    # Проверка на AFK (5 минут)
+    elapsed = time.time() - match.get('last_action_time', time.time())
+    if elapsed > 300:
+        await end_pvp_draw(callback.bot, match_id, "Один из игроков покинул Арену (AFK 5 минут).")
+        return await callback.answer("Техническая ничья по тайм-ауту.")
+        
+    left = int(300 - elapsed)
+    await callback.answer(f"Сейчас ход противника! До авто-ничьей (AFK): {left} сек.", show_alert=False)
 
 async def render_pvp(bot, match_id: int):
     match = get_pvp_match(match_id)
@@ -177,6 +194,26 @@ async def end_pvp_match(bot, match_id: int, winner_id: int, loser_id: int, reaso
     try: await bot.edit_message_text(lose_txt, chat_id=loser_id, message_id=loser['last_msg_id'], reply_markup=get_town_kb(loser), parse_mode="Markdown")
     except Exception: pass
 
+async def end_pvp_draw(bot, match_id: int, reason_log: str):
+    match = get_pvp_match(match_id)
+    p1 = get_user(match['p1_id'])
+    p2 = get_user(match['p2_id'])
+    
+    # Возврат взноса обоим
+    p1['gold'] += 100
+    p2['gold'] += 100
+    
+    update_user(p1['user_id'], state='STATE_TOWN', gold=p1['gold'], combat_data={})
+    update_user(p2['user_id'], state='STATE_TOWN', gold=p2['gold'], combat_data={})
+    
+    from handlers.town import get_town_kb
+    draw_txt = f"🤝 **ТЕХНИЧЕСКАЯ НИЧЬЯ!**\n{reason_log}\nВам возвращен взнос 100 🪙."
+    
+    try: await bot.edit_message_text(draw_txt, chat_id=p1['user_id'], message_id=p1['last_msg_id'], reply_markup=get_town_kb(p1), parse_mode="Markdown")
+    except Exception: pass
+    try: await bot.edit_message_text(draw_txt, chat_id=p2['user_id'], message_id=p2['last_msg_id'], reply_markup=get_town_kb(p2), parse_mode="Markdown")
+    except Exception: pass
+
 @router.callback_query(F.data == "pvp_move")
 async def pvp_move(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
@@ -198,8 +235,8 @@ async def pvp_move(callback: CallbackQuery):
         state['distance'] = "close"
         log = f"⚔️ {user['username']} бросился вперед! Ближний бой."
         
-    if is_p1: update_pvp_match(match_id, p1_ap=match['p1_ap'] - 1, match_state=json.dumps(state), log=log)
-    else: update_pvp_match(match_id, p2_ap=match['p2_ap'] - 1, match_state=json.dumps(state), log=log)
+    if is_p1: update_pvp_match(match_id, p1_ap=match['p1_ap'] - 1, match_state=json.dumps(state), log=log, last_action_time=time.time())
+    else: update_pvp_match(match_id, p2_ap=match['p2_ap'] - 1, match_state=json.dumps(state), log=log, last_action_time=time.time())
         
     await render_pvp(callback.bot, match_id)
     await callback.answer()
@@ -228,7 +265,6 @@ async def pvp_attack(callback: CallbackQuery):
         log = f"💨 Противник ловко увернулся от атаки {user['username']}!"
         dmg = 0
     else:
-        # Учет дистанции
         distance = state.get('distance', 'close')
         row_mult = 1.0 if distance == "close" else 0.5
         
@@ -244,11 +280,11 @@ async def pvp_attack(callback: CallbackQuery):
     
     if is_p1:
         match['p2_hp'] -= dmg
-        update_pvp_match(match_id, p2_hp=match['p2_hp'], p1_ap=match['p1_ap'] - 2, log=log)
+        update_pvp_match(match_id, p2_hp=match['p2_hp'], p1_ap=match['p1_ap'] - 2, log=log, last_action_time=time.time())
         if match['p2_hp'] <= 0: return await end_pvp_match(callback.bot, match_id, user['user_id'], match['p2_id'], log)
     else:
         match['p1_hp'] -= dmg
-        update_pvp_match(match_id, p1_hp=match['p1_hp'], p2_ap=match['p2_ap'] - 2, log=log)
+        update_pvp_match(match_id, p1_hp=match['p1_hp'], p2_ap=match['p2_ap'] - 2, log=log, last_action_time=time.time())
         if match['p1_hp'] <= 0: return await end_pvp_match(callback.bot, match_id, user['user_id'], match['p1_id'], log)
 
     await render_pvp(callback.bot, match_id)
@@ -310,7 +346,7 @@ async def execute_drink_pvp(callback: CallbackQuery):
     
     dmg_to_opp = 0
     heal_to_me = 0
-    ap_gain = -1 # Трата 1 ОД на питье, плюс баффы если есть
+    ap_gain = -1 
     
     if "хил" in p_lower or "реген хп" in p_lower or "рагу" in p_lower: heal_to_me += int(user['max_hp'] * 0.25)
     if "броня" in p_lower: my_buffs['buff_armor'] = my_buffs.get('buff_armor', 0) + 15; my_buffs['buff_armor_t'] = 3
@@ -332,17 +368,16 @@ async def execute_drink_pvp(callback: CallbackQuery):
         if is_thrown: opp_buffs['debuff_blind'] = 2
         else: my_buffs['debuff_blind'] = 2
         
-    # Применение урона и хила
     if is_p1:
         match['p1_hp'] = min(match['p1_max'], match['p1_hp'] + heal_to_me)
         match['p2_hp'] -= dmg_to_opp
         match['p1_ap'] += ap_gain
-        update_pvp_match(match_id, p1_hp=match['p1_hp'], p2_hp=match['p2_hp'], p1_ap=match['p1_ap'], match_state=json.dumps(state), log=log)
+        update_pvp_match(match_id, p1_hp=match['p1_hp'], p2_hp=match['p2_hp'], p1_ap=match['p1_ap'], match_state=json.dumps(state), log=log, last_action_time=time.time())
     else:
         match['p2_hp'] = min(match['p2_max'], match['p2_hp'] + heal_to_me)
         match['p1_hp'] -= dmg_to_opp
         match['p2_ap'] += ap_gain
-        update_pvp_match(match_id, p1_hp=match['p1_hp'], p2_hp=match['p2_hp'], p2_ap=match['p2_ap'], match_state=json.dumps(state), log=log)
+        update_pvp_match(match_id, p1_hp=match['p1_hp'], p2_hp=match['p2_hp'], p2_ap=match['p2_ap'], match_state=json.dumps(state), log=log, last_action_time=time.time())
 
     if match['p2_hp'] <= 0: return await end_pvp_match(callback.bot, match_id, match['p1_id'], match['p2_id'], log)
     if match['p1_hp'] <= 0: return await end_pvp_match(callback.bot, match_id, match['p2_id'], match['p1_id'], log)
@@ -376,7 +411,6 @@ async def pvp_end_turn(callback: CallbackQuery):
         if is_p1: match['p2_hp'] -= dot_dmg
         else: match['p1_hp'] -= dot_dmg
 
-    # Снижение таймеров баффов у ПРОТИВНИКА перед его ходом
     for buff_t in ['buff_armor_t', 'buff_str_t', 'buff_dodge_t', 'debuff_blind', 'debuff_fragile', 'debuff_vuln']:
         if opp_buffs.get(buff_t, 0) > 0:
             opp_buffs[buff_t] -= 1
@@ -387,8 +421,8 @@ async def pvp_end_turn(callback: CallbackQuery):
     if match['p2_hp'] <= 0: return await end_pvp_match(callback.bot, match_id, match['p1_id'], match['p2_id'], log)
     if match['p1_hp'] <= 0: return await end_pvp_match(callback.bot, match_id, match['p2_id'], match['p1_id'], log)
     
-    if is_p1: update_pvp_match(match_id, p1_ap=3, p2_hp=match['p2_hp'], turn=next_turn, match_state=json.dumps(state), log=log)
-    else: update_pvp_match(match_id, p2_ap=3, p1_hp=match['p1_hp'], turn=next_turn, match_state=json.dumps(state), log=log)
+    if is_p1: update_pvp_match(match_id, p1_ap=3, p2_hp=match['p2_hp'], turn=next_turn, match_state=json.dumps(state), log=log, last_action_time=time.time())
+    else: update_pvp_match(match_id, p2_ap=3, p1_hp=match['p1_hp'], turn=next_turn, match_state=json.dumps(state), log=log, last_action_time=time.time())
         
     await render_pvp(callback.bot, match_id)
     await callback.answer()
@@ -402,5 +436,5 @@ async def pvp_surrender(callback: CallbackQuery):
     if not match: return await callback.answer()
         
     winner_id = match['p2_id'] if user['user_id'] == match['p1_id'] else match['p1_id']
-    await end_pvp_match(callback.bot, match_id, winner_id, user['user_id'], f"🏳️ {user['username']} сдался!")
+    await end_pvp_match(callback.bot, match_id, winner_id, user['user_id'], f"🏳️ {user['username']} позорно бежал с поля боя!")
 

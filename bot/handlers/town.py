@@ -3,12 +3,11 @@ import random
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
-from database import get_connection, get_user, update_user, check_and_generate_quests, get_unlocked_titles
+from database import get_connection, get_user, update_user, check_and_generate_quests, get_unlocked_titles, get_top_clans
 
 router = Router()
 
 def ensure_user(user_id: int, username: str):
-    """Регистрирует пользователя, если его еще нет в БД"""
     user = get_user(user_id)
     if not user:
         with get_connection() as conn:
@@ -21,7 +20,6 @@ def ensure_user(user_id: int, username: str):
     return user
 
 def get_town_kb(user: dict) -> InlineKeyboardMarkup:
-    """Генерация главной клавиатуры лагеря (Хаба)"""
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚔️ Экспедиции", callback_data="town_dungeon_menu"),
          InlineKeyboardButton(text="🏟️ Арена (PvP)", callback_data="town_arena")],
@@ -36,11 +34,33 @@ def get_town_kb(user: dict) -> InlineKeyboardMarkup:
     return kb
 
 def generate_town_text(user: dict) -> str:
+    xp = user.get('xp', 0)
+    lvl = user.get('level', 1)
+    max_xp = lvl * 100
+    
+    # Генерация визуальной полоски опыта
+    filled = min(10, int((xp / max_xp) * 10))
+    xp_bar = "█" * filled + "░" * (10 - filled)
+    
+    # Генерация Топ-3 кланов
+    top_clans = get_top_clans(limit=3)
+    clans_text = ""
+    if top_clans:
+        clans_text = "\n\n🏆 **Топ-3 кланов недели:**\n"
+        medals = ["🥇", "🥈", "🥉"]
+        for i, clan in enumerate(top_clans):
+            icon = medals[i] if i < len(medals) else "🏅"
+            clans_text += f"{icon} {clan['name']} (Рейды: {clan['weekly_raids']})\n"
+    else:
+        clans_text = "\n\n🏆 **Топ-3 кланов недели:**\nПока нет активных кланов."
+    
     return (
         f"🏕️ **Лагерь Искателей (Камария)**\n\n"
-        f"👤 **{user['username']}** | Ур. {user.get('level', 1)}\n"
+        f"👤 **{user['username']}** | Ур. {lvl}\n"
+        f"🌟 Опыт: `{xp_bar}` {xp}/{max_xp} XP\n"
         f"❤️ ХП: {user['hp']}/{user['max_hp']} | ⚡ ОД: {user.get('energy', 5)}/{user.get('max_energy', 5)}\n"
-        f"💰 Золото: {user.get('gold', 0)} 🪙 | 💎 Кристаллы: {user.get('gems', 0)} 💎\n\n"
+        f"💰 Золото: {user.get('gold', 0)} 🪙 | 💎 Кристаллы: {user.get('gems', 0)} 💎"
+        f"{clans_text}\n\n"
         "Куда отправимся?"
     )
 
@@ -48,26 +68,19 @@ def generate_town_text(user: dict) -> str:
 @router.message(Command("start", "town"))
 async def cmd_start(message: Message):
     user = ensure_user(message.from_user.id, message.from_user.username or "Игрок")
-    
     text = generate_town_text(user)
     msg = await message.answer(text, reply_markup=get_town_kb(user), parse_mode="Markdown")
-    
-    # 🔒 АНТИ-ЧИЗИНГ: Запоминаем ID сообщения, чтобы старые меню больше не работали
     update_user(user['user_id'], state='STATE_TOWN', last_msg_id=msg.message_id)
 
 @router.callback_query(F.data == "town_back")
 async def cb_town_back(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     text = generate_town_text(user)
-    
     try:
         msg = await callback.message.edit_text(text, reply_markup=get_town_kb(user), parse_mode="Markdown")
-        # 🔒 Обновляем стейт и фиксируем текущее меню
         update_user(user['user_id'], state='STATE_TOWN', last_msg_id=callback.message.message_id)
     except Exception:
-        # Если текст не изменился (Aiogram error)
         update_user(user['user_id'], state='STATE_TOWN')
-        
     await callback.answer()
 
 
@@ -80,7 +93,6 @@ async def cb_town_home(callback: CallbackQuery):
     stats = home_data.get('stats', {})
     titles = get_unlocked_titles(home_data)
     
-    # Дейлики
     quests = check_and_generate_quests(user['user_id'])
     q_text = ""
     for q in quests.get("quests", []):
@@ -102,7 +114,6 @@ async def cb_town_home(callback: CallbackQuery):
         f"└ Смертей в рейдах: {stats.get('deaths_count', 0)}"
     )
     
-    # Проверка: выполнены ли квесты и не собрана ли награда?
     all_quests_completed = len(quests.get("quests", [])) > 0 and all(q.get("completed") for q in quests.get("quests", []))
     already_claimed = quests.get("claimed", False)
     
@@ -145,7 +156,6 @@ async def cb_town_home_settings(callback: CallbackQuery):
         [InlineKeyboardButton(text="🔙 Назад в Дом", callback_data="town_home")]
     ])
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-
 
 # --- ТАВЕРНА (ХАБ МИНИ-ИГР) ---
 @router.callback_query(F.data == "town_tavern")

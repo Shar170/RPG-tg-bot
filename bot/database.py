@@ -13,12 +13,12 @@ def init_db():
     with get_connection() as conn:
         cursor = conn.cursor()
         
-        # Безопасное добавление last_msg_id для защиты от чизинга
+        # Безопасное добавление колонок для защиты от чизинга и PvP
         try: cursor.execute("ALTER TABLE users ADD COLUMN last_msg_id INTEGER DEFAULT 0")
         except sqlite3.OperationalError: pass
-            
-        # Безопасное добавление match_state для PvP-движка (дистанция, дебаффы)
         try: cursor.execute("ALTER TABLE pvp_matches ADD COLUMN match_state TEXT DEFAULT '{}'")
+        except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE pvp_matches ADD COLUMN last_action_time REAL DEFAULT 0")
         except sqlite3.OperationalError: pass
             
         cursor.execute('''CREATE TABLE IF NOT EXISTS users (
@@ -56,7 +56,7 @@ def init_db():
         cursor.execute('''CREATE TABLE IF NOT EXISTS pvp_matches (
             match_id INTEGER PRIMARY KEY AUTOINCREMENT, p1_id INTEGER, p2_id INTEGER, 
             p1_hp INTEGER, p2_hp INTEGER, p1_max INTEGER, p2_max INTEGER, 
-            p1_ap INTEGER, p2_ap INTEGER, turn INTEGER, log TEXT, match_state TEXT DEFAULT '{}')''')
+            p1_ap INTEGER, p2_ap INTEGER, turn INTEGER, log TEXT, match_state TEXT DEFAULT '{}', last_action_time REAL DEFAULT 0)''')
         conn.commit()
 
 def seed_all():
@@ -167,6 +167,34 @@ def seed_all():
             ("rec_smoke_bomb", "smoke_bomb", json.dumps({"iron_ingot": 1, "cave_mushroom": 2}), 50)
         ]
         cursor.executemany("INSERT OR REPLACE INTO recipes VALUES (?, ?, ?, ?)", recipes)
+        conn.commit()
+
+def check_and_distribute_weekly_clan_rewards():
+    today = datetime.date.today()
+    current_year, current_week, _ = today.isocalendar()
+    current_week_key = f"{current_year}_W{current_week}"
+    
+    last_reward_week = get_setting("last_clan_reward_week", "")
+    if last_reward_week == current_week_key:
+        return
+    
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT clan_id, name, weekly_raids FROM clans ORDER BY weekly_raids DESC LIMIT 3")
+        top_clans = cursor.fetchall()
+        rewards = [10, 5, 1]
+        for idx, clan in enumerate(top_clans):
+            if clan[2] > 0:
+                clan_id = clan[0]
+                gems_reward = rewards[idx]
+                cursor.execute("SELECT clan_vault FROM clans WHERE clan_id = ?", (clan_id,))
+                vault_row = cursor.fetchone()
+                vault = json.loads(vault_row[0]) if vault_row and vault_row[0] else {"gold": 0, "items": {}}
+                vault["gems"] = vault.get("gems", 0) + gems_reward
+                cursor.execute("UPDATE clans SET clan_vault = ? WHERE clan_id = ?", (json.dumps(vault, ensure_ascii=False), clan_id))
+        
+        cursor.execute("UPDATE clans SET weekly_raids = 0")
+        cursor.execute("INSERT OR REPLACE INTO game_settings (key, value) VALUES ('last_clan_reward_week', ?)", (current_week_key,))
         conn.commit()
 
 def get_player_max_energy(player_level: int = 1) -> int:
@@ -340,7 +368,15 @@ def get_clan_members(clan_id: int):
         cursor.execute("SELECT user_id, username, level, clan_role, state FROM users WHERE clan_id = ?", (clan_id,))
         return [{"user_id": r[0], "username": r[1], "level": r[2], "clan_role": r[3], "state": r[4]} for r in cursor.fetchall()]
 
+def get_top_clans(limit=3):
+    check_and_distribute_weekly_clan_rewards()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name, weekly_raids FROM clans ORDER BY weekly_raids DESC LIMIT ?", (limit,))
+        return [{"name": row[0], "weekly_raids": row[1]} for row in cursor.fetchall()]
+
 def get_all_clans_ranked():
+    check_and_distribute_weekly_clan_rewards()
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT clan_id, name, level, weekly_raids, join_requests FROM clans ORDER BY weekly_raids DESC, clan_id ASC")
