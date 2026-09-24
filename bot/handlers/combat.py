@@ -161,7 +161,7 @@ async def handle_combat_victory(callback: CallbackQuery, user_id: int, combat: d
         if fresh_user['clan_id'] != 0:
             clan = get_clan(fresh_user['clan_id'])
             if clan:
-                update_clan(clan['clan_id'], weekly_raids=clan['weekly_raids'] + 1)
+                update_clan(clan['clan_id'], weekly_raids=clan.get('weekly_raids', 0) + 1, total_raids=clan.get('total_raids', 0) + 1)
 
         from handlers.town import get_town_kb
         update_user(user_id, state='STATE_TOWN', dungeon_data={})
@@ -224,7 +224,6 @@ async def combat_attack(callback: CallbackQuery):
         extra_str = combat.get('buff_str', 0)
         dmg = int((base_dmg + w_dmg + extra_str) * row_mult)
         
-        # Учет уязвимости врага
         if combat.get('enemy_vuln', 0) > 0:
             dmg = int(dmg * 1.25)
 
@@ -327,7 +326,6 @@ async def combat_end_turn(callback: CallbackQuery):
         dodge_chance = 0.05 + combat.get('buff_dodge', 0.0)
         enemy_name = combat.get('enemy_name', 'Враг')
         
-        # Учет слепоты врага
         if combat.get('enemy_blind', 0) > 0 and random.random() < 0.4:
             log_parts.append(f"👁️ {enemy_name} ослеплен и бьет мимо!")
         elif random.random() < dodge_chance:
@@ -365,7 +363,6 @@ async def combat_end_turn(callback: CallbackQuery):
                 user['hp'] -= 10
                 log_parts.append("🟢 Отравление! (-10 ХП)")
 
-    # Обновление таймеров баффов/дебаффов
     for buff_t in ['buff_armor_t', 'buff_str_t', 'buff_dodge_t', 'debuff_blind', 'debuff_fragile', 'debuff_vuln', 'enemy_blind', 'enemy_vuln']:
         if combat.get(buff_t, 0) > 0:
             combat[buff_t] -= 1
@@ -442,7 +439,6 @@ async def execute_drink_combat(callback: CallbackQuery):
 
     p_lower = used_item.lower()
     
-    # ЛОГИКА ТИПА ЗЕЛЬЯ: Пьем или Бросаем?
     positive_keywords = ["хил", "реген", "рагу", "ускорение", "бодрость", "броня", "сопротивление", "тяжесть", "сила", "уклонение", "ловкость", "полет", "очищение", "мана", "богатство", "удача", "свет", "защита"]
     is_thrown = not any(pos in p_lower for pos in positive_keywords)
     
@@ -470,7 +466,6 @@ async def execute_drink_combat(callback: CallbackQuery):
             note = " 🛡️ Сопротивление (-50% урона)."
         return int(base_val * multiplier), note
 
-    # --- БАФФЫ И ХИЛ (Работают только если мы ПЬЕМ зелье) ---
     if "рагу" in p_lower:
         heal = int(user['max_hp'] * 0.35)
         user['hp'] = min(user['max_hp'], user['hp'] + heal)
@@ -500,7 +495,6 @@ async def execute_drink_combat(callback: CallbackQuery):
         combat['debuff_vuln'] = 0
         log_msg += "✨ Очищение: все негативные эффекты сняты!\n"
 
-    # --- АТАКУЮЩИЕ ЭФФЕКТЫ (Всегда бьют врага) ---
     if "урон огнем" in p_lower:
         dmg, note = calc_element_dmg(30 + user.get('level', 1) * 5, "fire")
         if dmg > 0:
@@ -582,7 +576,6 @@ async def execute_drink_combat(callback: CallbackQuery):
         update_user(user['user_id'], dungeon_data=dungeon_data)
         log_msg += f"💰 Превращение в золото: +{gold_b} 🪙!\n"
 
-    # --- ДЕБАФФЫ (Определяются броском или распитием) ---
     if "слабость" in p_lower or "ожог" in p_lower or "болезнь" in p_lower or "удушье" in p_lower:
         if is_thrown:
             combat['enemy_hp'] -= 15
@@ -615,13 +608,11 @@ async def execute_drink_combat(callback: CallbackQuery):
             combat['debuff_vuln'] = 3
             log_msg += "🎯 Побочный эффект: входящий урон увеличен на 25% на 3 хода!\n"
 
-    # Обновление данных хоста в Co-op
     if 'coop_host' in combat:
         host = get_user(combat['coop_host'])
         host['combat_data']['enemy_hp'] = combat['enemy_hp']
         update_user(host['user_id'], combat_data=host['combat_data'])
 
-    # Проверки на смерть
     if user['hp'] <= 0:
         track_stat(user['user_id'], 'deaths_count', 1)
         apply_death_penalty(user['user_id'], user.get('dungeon_data', {}))

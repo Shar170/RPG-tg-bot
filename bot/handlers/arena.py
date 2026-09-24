@@ -6,7 +6,8 @@ from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from database import (
     get_user, update_user, get_connection, get_pvp_match, update_pvp_match, 
-    remove_from_queue, track_stat, add_global_event, get_item, get_setting, calculate_damage_received
+    remove_from_queue, track_stat, add_global_event, get_item, get_setting, 
+    calculate_damage_received, consume_energy
 )
 
 router = Router()
@@ -22,13 +23,13 @@ async def arena_menu(callback: CallbackQuery):
     
     text = (
         "⚔️ **Арена Чемпионов**\n\n"
-        "Взнос за участие: **100 🪙**\n"
+        "Взнос за участие: **100 🪙** и **1 ⚡**\n"
         "Победитель забирает **200 🪙** (свой взнос + взнос врага).\n\n"
         "Подбор ищет соперника максимально близкого к вашему уровню. Члены одного клана не могут встретиться на арене.\n\n"
         f"🏆 Ваши победы: **{wins}**"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔎 Встать в очередь (100 🪙)", callback_data="arena_join")],
+        [InlineKeyboardButton(text="🔎 Встать в очередь (100 🪙 + 1 ⚡)", callback_data="arena_join")],
         [InlineKeyboardButton(text="🔙 В лагерь", callback_data="town_back")]
     ])
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -40,12 +41,18 @@ async def arena_join(callback: CallbackQuery):
     if user['gold'] < 100:
         return await callback.answer("У вас нет 100 золота для взноса!", show_alert=True)
         
+    if not consume_energy(user['user_id'], 1):
+        return await callback.answer("Недостаточно энергии (нужно 1 ⚡)!", show_alert=True)
+        
     my_lvl = user['level']
     my_clan = user.get('clan_id', 0)
-    
     user['gold'] -= 100
-    update_user(user['user_id'], gold=user['gold'])
     
+    match_found = False
+    opp_id = None
+    match_id = None
+    
+    # Открываем транзакцию только для чтения/записи матча (без update_user)
     with get_connection() as conn:
         cursor = conn.cursor()
         
@@ -63,32 +70,46 @@ async def arena_join(callback: CallbackQuery):
                 match = bot_match
         
         if match:
+            match_found = True
             opp_id = match[0]
             cursor.execute("DELETE FROM arena_queue WHERE user_id = ?", (opp_id,))
             
-            opp = get_user(opp_id)
+            cursor.execute("SELECT max_hp FROM users WHERE user_id = ?", (opp_id,))
+            opp_max_hp = cursor.fetchone()[0]
+            
             initial_state = json.dumps({"distance": "close", "p1": {}, "p2": {}})
             cursor.execute("""
                 INSERT INTO pvp_matches (p1_id, p2_id, p1_hp, p2_hp, p1_max, p2_max, p1_ap, p2_ap, turn, log, match_state, last_action_time) 
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (user['user_id'], opp_id, user['max_hp'], opp['max_hp'], user['max_hp'], opp['max_hp'], 3, 3, user['user_id'], "⚔️ Битва началась!", initial_state, time.time()))
+            """, (user['user_id'], opp_id, user['max_hp'], opp_max_hp, user['max_hp'], opp_max_hp, 3, 3, user['user_id'], "⚔️ Битва началась!", initial_state, time.time()))
             match_id = cursor.lastrowid
             conn.commit()
-            
-            update_user(user['user_id'], state='STATE_PVP', combat_data={"pvp_match_id": match_id})
-            if opp.get('is_bot', 0) == 0:
-                update_user(opp_id, state='STATE_PVP', combat_data={"pvp_match_id": match_id})
-            
-            await render_pvp(callback.bot, match_id)
-            await callback.answer()
         else:
             cursor.execute("INSERT OR REPLACE INTO arena_queue (user_id, level, clan_id, joined_at) VALUES (?, ?, ?, ?)", 
                            (user['user_id'], my_lvl, my_clan, time.time()))
             conn.commit()
             
-            update_user(user['user_id'], state='STATE_ARENA_QUEUE')
-            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отменить поиск", callback_data="arena_cancel")]])
-            await callback.message.edit_text("⏳ **Поиск противника...**\nВзнос 100 🪙 уплачен. Ожидаем бойца.", reply_markup=kb, parse_mode="Markdown")
+    # Вне блока транзакции безопасно используем update_user
+    if match_found:
+        opp = get_user(opp_id)
+        if opp.get('is_bot', 0) == 1:
+            bot_potions = ["Зелье: Хил", "Зелье: Хил"]
+            attack_pool = ["Зелье: Урон огнем", "Зелье: Урон ядом", "Зелье: Урон льдом", "Зелье: Слепота", "Зелье: Хрупкость"]
+            bot_potions.extend(random.sample(attack_pool, k=random.randint(1, 2)))
+            
+            opp_inv = opp.get('inventory', {})
+            opp_inv['potions'] = bot_potions
+            update_user(opp_id, inventory=opp_inv, state='STATE_PVP', combat_data={"pvp_match_id": match_id})
+        else:
+            update_user(opp_id, state='STATE_PVP', combat_data={"pvp_match_id": match_id})
+            
+        update_user(user['user_id'], gold=user['gold'], state='STATE_PVP', combat_data={"pvp_match_id": match_id})
+        await render_pvp(callback.bot, match_id)
+        await callback.answer()
+    else:
+        update_user(user['user_id'], gold=user['gold'], state='STATE_ARENA_QUEUE')
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отменить поиск", callback_data="arena_cancel")]])
+        await callback.message.edit_text("⏳ **Поиск противника...**\nВзнос 100 🪙 и 1 ⚡ уплачены. Ожидаем бойца.", reply_markup=kb, parse_mode="Markdown")
 
 @router.callback_query(F.data == "arena_cancel")
 async def arena_cancel(callback: CallbackQuery):
@@ -96,9 +117,10 @@ async def arena_cancel(callback: CallbackQuery):
     remove_from_queue(user['user_id'])
     
     user['gold'] += 100
-    update_user(user['user_id'], state='STATE_TOWN', gold=user['gold'])
+    user['energy'] = min(user.get('energy', 5) + 1, 999) # Возвращаем энергию за отмену
+    update_user(user['user_id'], state='STATE_TOWN', gold=user['gold'], energy=user['energy'])
     
-    await callback.answer("Поиск отменен, 100 🪙 возвращены.", show_alert=True)
+    await callback.answer("Поиск отменен, 100 🪙 и 1 ⚡ возвращены.", show_alert=True)
     await arena_menu(callback)
 
 
@@ -252,13 +274,48 @@ async def process_bot_turn(bot, match_id: int):
     opp_buffs = state.get('p2' if is_p1 else 'p1', {})
     
     log = ""
-    my_hp = match['p1_hp'] if is_p1 else 'p2_hp'
-    my_max = match['p1_max'] if is_p1 else 'p2_max'
+    my_hp = 'p1_hp' if is_p1 else 'p2_hp'
+    my_max = 'p1_max' if is_p1 else 'p2_max'
     
-    if match[my_hp] < (match[my_max] * 0.3) and match[ap_key] >= 1:
-        match[my_hp] += int(match[my_max] * 0.25)
-        match[ap_key] -= 1
-        log = f"🧪 {bot_user['username']} выпил зелье лечения!\n"
+    inv = bot_user['inventory']
+    bot_potions = inv.get("potions", [])
+    used_potion = False
+    
+    # Использование зелья (Хил)
+    if match[my_hp] < (match[my_max] * 0.4) and match[ap_key] >= 1:
+        heal_potions = [p for p in bot_potions if "Хил" in p or "Реген" in p or "Рагу" in p]
+        if heal_potions:
+            heal_p = heal_potions[0]
+            bot_potions.remove(heal_p)
+            match[my_hp] += int(match[my_max] * 0.25)
+            if match[my_hp] > match[my_max]: match[my_hp] = match[my_max]
+            match[ap_key] -= 1
+            log += f"🧪 {bot_user['username']} выпил [{heal_p}]!\n"
+            update_user(bot_user['user_id'], inventory=inv)
+            used_potion = True
+
+    # Использование зелья (Урон/Дебафф), если не хилился
+    if not used_potion and match[ap_key] >= 1 and random.random() < 0.4:
+        att_potions = [p for p in bot_potions if "Урон" in p or "Слепота" in p or "Хрупкость" in p]
+        if att_potions:
+            att_p = att_potions[0]
+            bot_potions.remove(att_p)
+            match[ap_key] -= 1
+            
+            p_lower = att_p.lower()
+            dmg_to_opp = 0
+            log += f"🧪 {bot_user['username']} бросил [{att_p}]!\n"
+            
+            if "урон огнем" in p_lower: dmg_to_opp += 30; opp_buffs['dot_burn'] = opp_buffs.get('dot_burn', 0) + 3
+            if "урон ядом" in p_lower: dmg_to_opp += 20; opp_buffs['dot_poison'] = opp_buffs.get('dot_poison', 0) + 4
+            if "урон льдом" in p_lower: dmg_to_opp += 25; state['distance'] = "far"
+            if "хрупкость" in p_lower: opp_buffs['debuff_vuln'] = opp_buffs.get('debuff_vuln', 0) + 3
+            if "слепота" in p_lower: opp_buffs['debuff_blind'] = opp_buffs.get('debuff_blind', 0) + 2
+            
+            if is_p1: match['p2_hp'] -= dmg_to_opp
+            else: match['p1_hp'] -= dmg_to_opp
+            
+            update_user(bot_user['user_id'], inventory=inv)
     
     if state.get('distance', 'close') == "far" and match[ap_key] >= 1:
         state['distance'] = "close"
@@ -272,8 +329,6 @@ async def process_bot_turn(bot, match_id: int):
         else:
             row_mult = 1.0 if state.get('distance', 'close') == "close" else 0.5
             
-            # Бот теперь тоже использует оружие! Если его нет, бьет кулаками.
-            inv = bot_user['inventory']
             weapon_id = inv.get("equipment", {}).get("weapon")
             weapon_data = get_item(weapon_id) if weapon_id else None
             
@@ -283,7 +338,6 @@ async def process_bot_turn(bot, match_id: int):
             raw_dmg = int((base_dmg + w_dmg) * row_mult)
             if opp_buffs.get('debuff_vuln', 0) > 0: raw_dmg = int(raw_dmg * 1.25)
             
-            # Считаем броню игрока
             opp_user = get_user(match['p2_id'] if is_p1 else match['p1_id'])
             opp_inv = opp_user['inventory']
             opp_armor_id = opp_inv.get("equipment", {}).get("armor")

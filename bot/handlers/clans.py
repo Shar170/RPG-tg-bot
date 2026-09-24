@@ -126,7 +126,7 @@ async def clan_create_name_input(message: Message, state: FSMContext):
         
     with get_connection() as conn:
         cur = conn.cursor()
-        cur.execute("INSERT INTO clans (name, leader_id, level, treasury, weekly_raids, join_requests, clan_vault) VALUES (?, ?, 1, 0, 0, '[]', '{\"gems\": 0, \"items\": {}}')", (name, user['user_id']))
+        cur.execute("INSERT INTO clans (name, leader_id, level, treasury, weekly_raids, total_raids, join_requests, clan_vault) VALUES (?, ?, 1, 0, 0, 0, '[]', '{\"gems\": 0, \"items\": {}}')", (name, user['user_id']))
         new_clan_id = cur.lastrowid
         conn.commit()
         
@@ -144,7 +144,7 @@ async def clan_create_name_input(message: Message, state: FSMContext):
 # --- МОЙ КЛАН (ПРОФИЛЬ) ---
 @router.callback_query(F.data == "clan_my_info")
 async def show_my_clan(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
+    if state: await state.clear()
     user = get_user(callback.from_user.id)
     clan_id = user.get('clan_id', 0)
     if clan_id == 0:
@@ -170,6 +170,7 @@ async def show_my_clan(callback: CallbackQuery, state: FSMContext):
     text = (
         f"🏰 **Клан: {clan['name']}**\n\n"
         f"Уровень: **{clan['level']}**\n"
+        f"Рейдов за всё время: **{clan.get('total_raids', 0)}**\n"
         f"Бойцов: **{len(members)} / {max_m}**\n\n"
         f"👥 **Состав клана:**\n{members_text}\n"
     )
@@ -177,8 +178,10 @@ async def show_my_clan(callback: CallbackQuery, state: FSMContext):
         text += f"📬 **Входящие заявки:** {reqs_count} шт.\n"
         
     buttons = []
-    if is_leader and reqs_count > 0:
-        buttons.append([InlineKeyboardButton(text=f"📬 Заявки ({reqs_count})", callback_data="clan_requests_view")])
+    if is_leader:
+        buttons.append([InlineKeyboardButton(text="🔼 Улучшить клан", callback_data="clan_upgrade_ask")])
+        if reqs_count > 0:
+            buttons.append([InlineKeyboardButton(text=f"📬 Заявки ({reqs_count})", callback_data="clan_requests_view")])
         
     if user['clan_role'] in ['hedwing', 'lindeman']:
         buttons.append([InlineKeyboardButton(text="👥 Управление составом", callback_data="clan_manage_list")])
@@ -188,6 +191,75 @@ async def show_my_clan(callback: CallbackQuery, state: FSMContext):
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="clan_main")])
     
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
+
+# --- ПРОКАЧКА КЛАНА ---
+@router.callback_query(F.data == "clan_upgrade_ask")
+async def clan_upgrade_ask(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
+    clan = get_clan(user.get('clan_id', 0))
+    
+    if not clan or clan['leader_id'] != user['user_id']:
+        return await callback.answer("Только лидер может улучшать клан!", show_alert=True)
+        
+    cur_lvl = clan['level']
+    req_gold = 9000 + (cur_lvl * 1000)
+    req_gems = 90 + (cur_lvl * 10)
+    req_raids = cur_lvl * 100
+    
+    vault_raw = clan.get('clan_vault', '{}')
+    vault = json.loads(vault_raw) if isinstance(vault_raw, str) else vault_raw
+    cur_gold = clan['treasury']
+    cur_gems = vault.get('gems', 0)
+    cur_raids = clan.get('total_raids', 0)
+    
+    gold_mark = "✅" if cur_gold >= req_gold else "❌"
+    gems_mark = "✅" if cur_gems >= req_gems else "❌"
+    raids_mark = "✅" if cur_raids >= req_raids else "❌"
+    
+    text = (
+        f"🔼 **Улучшение клана до {cur_lvl + 1} уровня**\n\n"
+        f"Новый уровень увеличит максимальное количество участников на 5!\n\n"
+        f"**Требования:**\n"
+        f"• Золото в казне: **{cur_gold} / {req_gold}** 🪙 {gold_mark}\n"
+        f"• Кристаллы в казне: **{cur_gems} / {req_gems}** 💎 {gems_mark}\n"
+        f"• Всего рейдов пройдено: **{cur_raids} / {req_raids}** ⚔️ {raids_mark}\n\n"
+        f"*(Ресурсы будут списаны из казны)*"
+    )
+    
+    buttons = []
+    if cur_gold >= req_gold and cur_gems >= req_gems and cur_raids >= req_raids:
+        buttons.append([InlineKeyboardButton(text="✨ Улучшить!", callback_data="clan_upgrade_do")])
+        
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="clan_my_info")])
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
+
+@router.callback_query(F.data == "clan_upgrade_do")
+async def clan_upgrade_do(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
+    clan = get_clan(user.get('clan_id', 0))
+    
+    if not clan or clan['leader_id'] != user['user_id']:
+        return await callback.answer("Ошибка доступа!", show_alert=True)
+        
+    cur_lvl = clan['level']
+    req_gold = 9000 + (cur_lvl * 1000)
+    req_gems = 90 + (cur_lvl * 10)
+    req_raids = cur_lvl * 100
+    
+    vault_raw = clan.get('clan_vault', '{}')
+    vault = json.loads(vault_raw) if isinstance(vault_raw, str) else vault_raw
+    
+    if clan['treasury'] < req_gold or vault.get('gems', 0) < req_gems or clan.get('total_raids', 0) < req_raids:
+        return await callback.answer("Недостаточно ресурсов или рейдов!", show_alert=True)
+        
+    vault['gems'] -= req_gems
+    new_treasury = clan['treasury'] - req_gold
+    
+    update_clan(clan['clan_id'], level=cur_lvl + 1, treasury=new_treasury, clan_vault=json.dumps(vault, ensure_ascii=False))
+    
+    await callback.answer(f"🎉 Клан достиг {cur_lvl + 1} уровня!", show_alert=True)
+    await show_my_clan(callback, None)
+
 
 # --- УПРАВЛЕНИЕ СОСТАВОМ (Повышения / Изгнания) ---
 @router.callback_query(F.data == "clan_manage_list")
@@ -305,7 +377,6 @@ async def show_clan_vault(callback: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="📦 Внести ресурсы", callback_data="clan_donate_item_list")]
     ]
     
-    # Кнопки изъятия доступны только Лидеру и Офицерам
     if user.get('clan_role') in ['hedwing', 'lindeman']:
         buttons.append([
             InlineKeyboardButton(text="📤 Взять золото", callback_data="clan_withdraw_gold_ask"),

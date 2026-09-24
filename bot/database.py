@@ -22,6 +22,8 @@ def init_db():
         except sqlite3.OperationalError: pass
         try: cursor.execute("ALTER TABLE pvp_matches ADD COLUMN last_action_time REAL DEFAULT 0")
         except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE clans ADD COLUMN total_raids INTEGER DEFAULT 0")
+        except sqlite3.OperationalError: pass
             
         cursor.execute('''CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY, username TEXT, state TEXT, hp INTEGER, max_hp INTEGER,
@@ -50,7 +52,7 @@ def init_db():
             key TEXT PRIMARY KEY, value TEXT)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS clans (
             clan_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, leader_id INTEGER, treasury INTEGER DEFAULT 0, level INTEGER DEFAULT 1, 
-            weekly_raids INTEGER DEFAULT 0, join_requests TEXT DEFAULT '[]', clan_vault TEXT DEFAULT '{"gold": 0, "gems": 0, "items": {}}')''')
+            weekly_raids INTEGER DEFAULT 0, total_raids INTEGER DEFAULT 0, join_requests TEXT DEFAULT '[]', clan_vault TEXT DEFAULT '{"gold": 0, "gems": 0, "items": {}}')''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS war_regions (
             region_id INTEGER PRIMARY KEY, name TEXT, desc TEXT, target_clears INTEGER DEFAULT 100000, 
             current_clears INTEGER DEFAULT 0, is_liberated INTEGER DEFAULT 0, boss_id TEXT, mobs TEXT)''')
@@ -141,7 +143,6 @@ def simulate_bot_activity():
         cursor.execute("INSERT OR REPLACE INTO game_settings (key, value) VALUES ('last_bot_sim', ?)", (str(now),))
         conn.commit()
 
-    # Вызываем запись в лог за пределами открытой транзакции
     for evt in events_to_add:
         add_global_event(evt)
 
@@ -432,8 +433,16 @@ def consume_energy(user_id: int, amount: int = 1) -> bool:
 
 def get_clan(clan_id: int):
     with get_connection() as conn:
-        row = conn.cursor().execute("SELECT * FROM clans WHERE clan_id = ?", (clan_id,)).fetchone()
-        if row: return {"clan_id": row[0], "name": row[1], "leader_id": row[2], "treasury": row[3], "level": row[4], "weekly_raids": row[5], "join_requests": json.loads(row[6]), "clan_vault": row[7]}
+        cursor = conn.cursor()
+        cursor.execute("SELECT clan_id, name, leader_id, treasury, level, weekly_raids, join_requests, clan_vault, total_raids FROM clans WHERE clan_id = ?", (clan_id,))
+        row = cursor.fetchone()
+        if row: 
+            return {
+                "clan_id": row[0], "name": row[1], "leader_id": row[2], 
+                "treasury": row[3], "level": row[4], "weekly_raids": row[5], 
+                "join_requests": json.loads(row[6]), "clan_vault": row[7],
+                "total_raids": row[8]
+            }
     return None
 
 def get_clan_by_name(name: str):
