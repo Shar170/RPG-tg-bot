@@ -10,6 +10,31 @@ DB_PATH = os.path.join(BASE_DIR, '..', 'bot', 'game_data.db')
 
 st.set_page_config(page_title="Kamaria RPG Admin", layout="wide", page_icon="🛡️")
 
+# ==========================================
+# 🔒 АВТОРИЗАЦИЯ
+# ==========================================
+ADMIN_PASSWORD = "super_secret_password_123"  # <-- ВПИШИ СЮДА СВОЙ НАДЕЖНЫЙ ПАРОЛЬ
+
+if 'authenticated' not in st.session_state:
+    st.session_state['authenticated'] = False
+
+if not st.session_state['authenticated']:
+    st.title("🛡️ Kamaria RPG — Авторизация")
+    st.markdown("Панель управления содержит критически важные данные игры. Пожалуйста, авторизуйтесь.")
+    
+    with st.form("login_form"):
+        pwd = st.text_input("Пароль администратора", type="password")
+        if st.form_submit_button("Войти"):
+            if pwd == ADMIN_PASSWORD:
+                st.session_state['authenticated'] = True
+                st.rerun()
+            else:
+                st.error("❌ Неверный пароль!")
+    st.stop() # Останавливает выполнение скрипта, если не авторизован
+
+# ==========================================
+# ФУНКЦИИ БАЗЫ ДАННЫХ
+# ==========================================
 def get_conn(): 
     conn = sqlite3.connect(DB_PATH)
     try: conn.execute("ALTER TABLE bestiary ADD COLUMN skills TEXT DEFAULT '{}'")
@@ -54,7 +79,6 @@ def get_all_items_dict():
         return d
 
 def get_db_schema():
-    """Возвращает структуру таблиц и их колонок"""
     schema = {}
     with get_conn() as conn:
         tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()]
@@ -93,14 +117,20 @@ with st.sidebar:
                         st.rerun()
             except Exception as e:
                 st.error(f"Ошибка: {e}")
+                
+    st.divider()
+    if st.button("🚪 Выйти (Сбросить сессию)", type="secondary", use_container_width=True):
+        st.session_state['authenticated'] = False
+        st.rerun()
 
 # ==========================================
 # ОСНОВНОЙ ИНТЕРФЕЙС ВКЛАДОК
 # ==========================================
 st.title("🛡️ Kamaria RPG — Панель Управления")
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🦇 Бестиарий", 
     "👥 Игроки", 
+    "🏰 Кланы",
     "📖 Рецепты и Алхимия",
     "💻 SQL Запросы",
     "📊 Таблицы БД",
@@ -193,23 +223,23 @@ with tab2:
         with st.form("user_editor"):
             st.subheader(f"Профиль: {user['username']}")
             
-            c1, c2, c3 = st.columns(3)
+            c1, c2, c3, c4 = st.columns(4)
             new_gold = c1.number_input("Золото 🪙", value=int(user['gold']))
             new_gems = c2.number_input("Алмазы 💎", value=int(user.get('gems', 0)))
-            new_state = c3.text_input("Состояние (state)", value=str(user['state']))
+            new_energy = c3.number_input("Энергия ⚡", value=int(user.get('energy', 5)))
+            new_state = c4.text_input("Состояние (state)", value=str(user['state']))
             
-            c4, c5, c6 = st.columns(3)
-            new_hp = c4.number_input("Текущее ХП", value=int(user['hp']))
-            new_max_hp = c5.number_input("Макс ХП", value=int(user['max_hp']))
-            new_level = c6.number_input("Уровень", value=int(user.get('level', 1)))
+            c5, c6, c7, c8 = st.columns(4)
+            new_hp = c5.number_input("Текущее ХП ❤️", value=int(user['hp']))
+            new_max_hp = c6.number_input("Макс ХП 💗", value=int(user['max_hp']))
+            new_level = c7.number_input("Уровень 🌟", value=int(user.get('level', 1)))
+            new_xp = c8.number_input("Опыт (XP) ✨", value=int(user.get('xp', 0)))
             
-            c7, c8, c9 = st.columns(3)
-            new_xp = c7.number_input("Опыт (XP)", value=int(user.get('xp', 0)))
-            new_clan_id = c8.number_input("ID Клана (0 = нет)", value=int(user.get('clan_id', 0)))
-            
+            c9, c10 = st.columns(2)
+            new_clan_id = c9.number_input("ID Клана (0 = нет) 🏰", value=int(user.get('clan_id', 0)))
             current_role = user.get('clan_role', 'thrall')
             if current_role not in ["thrall", "lindeman", "hedwing"]: current_role = "thrall"
-            new_clan_role = c9.selectbox("Роль в клане", ["thrall", "lindeman", "hedwing"], index=["thrall", "lindeman", "hedwing"].index(current_role))
+            new_clan_role = c10.selectbox("Роль в клане 🎭", ["thrall", "lindeman", "hedwing"], index=["thrall", "lindeman", "hedwing"].index(current_role))
             
             st.markdown("### 🎒 Прямое редактирование Инвентаря (JSON)")
             inv_str = st.text_area("JSON Инвентаря", value=json.dumps(json.loads(user['inventory']), indent=4, ensure_ascii=False), height=300)
@@ -226,11 +256,11 @@ with tab2:
                     with get_conn() as conn:
                         conn.execute("""
                             UPDATE users SET 
-                                gold=?, gems=?, hp=?, max_hp=?, level=?, xp=?, 
+                                gold=?, gems=?, energy=?, hp=?, max_hp=?, level=?, xp=?, 
                                 clan_id=?, clan_role=?, state=?, inventory=?, home_data=? 
                             WHERE user_id=?
                         """, (
-                            new_gold, new_gems, new_hp, new_max_hp, new_level, new_xp, 
+                            new_gold, new_gems, new_energy, new_hp, new_max_hp, new_level, new_xp, 
                             new_clan_id, new_clan_role, new_state, 
                             json.dumps(parsed_inv, ensure_ascii=False), 
                             json.dumps(parsed_home, ensure_ascii=False), 
@@ -242,8 +272,65 @@ with tab2:
                 except Exception as e:
                     st.error(f"Ошибка валидации JSON: {e}")
 
-# --- ВКЛАДКА 3: РЕЦЕПТЫ И АЛХИМИЯ ---
+# --- ВКЛАДКА 3: КЛАНЫ ---
 with tab3:
+    clans_df = fetch_table("clans")
+    if not clans_df.empty:
+        selected_clan_name = st.selectbox("Выберите клан:", clans_df['name'])
+        clan = clans_df[clans_df['name'] == selected_clan_name].iloc[0]
+        
+        with st.form("clan_editor"):
+            st.subheader(f"🏰 Клан: {clan['name']} (ID: {clan['clan_id']})")
+            
+            c1, c2, c3 = st.columns(3)
+            new_c_name = c1.text_input("Название клана", value=str(clan['name']))
+            new_c_leader = c2.number_input("ID Лидера", value=int(clan.get('leader_id', 0)))
+            new_c_level = c3.number_input("Уровень клана", value=int(clan.get('level', 1)))
+            
+            c4, c5, c6 = st.columns(3)
+            new_c_treasury = c4.number_input("Казна (Золото) 🪙", value=int(clan.get('treasury', 0)))
+            new_c_weekly = c5.number_input("Рейды (Неделя)", value=int(clan.get('weekly_raids', 0)))
+            new_c_total = c6.number_input("Рейды (Всего за всё время)", value=int(clan.get('total_raids', 0)))
+            
+            st.markdown("### 📦 Склад и Алмазы клана (JSON)")
+            vault_raw = clan.get('clan_vault', '{}')
+            if pd.isna(vault_raw) or not vault_raw: vault_raw = '{}'
+            vault_str = st.text_area("JSON clan_vault", value=json.dumps(json.loads(vault_raw), indent=4, ensure_ascii=False), height=250)
+            
+            if st.form_submit_button("💾 Сохранить Клан"):
+                try:
+                    parsed_vault = json.loads(vault_str)
+                    with get_conn() as conn:
+                        conn.execute("""
+                            UPDATE clans SET 
+                                name=?, leader_id=?, level=?, treasury=?, 
+                                weekly_raids=?, total_raids=?, clan_vault=?
+                            WHERE clan_id=?
+                        """, (
+                            new_c_name, new_c_leader, new_c_level, new_c_treasury,
+                            new_c_weekly, new_c_total, json.dumps(parsed_vault, ensure_ascii=False),
+                            int(clan['clan_id'])
+                        ))
+                        conn.commit()
+                    st.success("Клан успешно обновлен!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Ошибка валидации JSON: {e}")
+                    
+        st.markdown("### 👥 Текущие участники клана")
+        try:
+            members_df = pd.read_sql_query(
+                f"SELECT user_id, username, level, clan_role, state FROM users WHERE clan_id={clan['clan_id']} ORDER BY level DESC", 
+                get_conn()
+            )
+            st.dataframe(members_df, use_container_width=True)
+        except Exception as e:
+            st.warning("Не удалось загрузить участников.")
+    else:
+        st.info("В базе данных пока нет ни одного клана.")
+
+# --- ВКЛАДКА 4: РЕЦЕПТЫ И АЛХИМИЯ ---
+with tab4:
     st.subheader("🔨 Рецепты Мастерской (Кузница)")
     recipes_df = fetch_table("recipes")
     items_dict = get_all_items_dict()
@@ -315,13 +402,12 @@ with tab3:
         st.dataframe(pd.DataFrame(alch_display), use_container_width=True)
 
 # =====================================================================
-# 💻 ВКЛАДКА 4: РАЗДЕЛ ДЛЯ ПРЯМЫХ SQL ЗАПРОСОВ (НОВОЕ!)
+# 💻 ВКЛАДКА 5: РАЗДЕЛ ДЛЯ ПРЯМЫХ SQL ЗАПРОСОВ
 # =====================================================================
-with tab4:
+with tab5:
     st.subheader("💻 Прямые SQL запросы к базе данных")
     st.markdown("Здесь можно исполнять любые запросы: `SELECT`, `UPDATE`, `INSERT`, `DELETE`, `ALTER TABLE` и целые скрипты.")
 
-    # Быстрые шаблоны
     with st.expander("⚡ Готовые шаблоны запросов (кликните, чтобы скопировать)"):
         c_t1, c_t2 = st.columns(2)
         with c_t1:
@@ -333,7 +419,6 @@ with tab4:
             st.code("-- Восстановить энергию всем до 5\nUPDATE users SET energy = 5;", language="sql")
             st.code("-- Список всех таблиц и количества строк\nSELECT name, type FROM sqlite_master WHERE type='table';", language="sql")
 
-    # Основная область ввода
     col_editor, col_schema = st.columns([3, 1])
 
     with col_schema:
@@ -360,7 +445,6 @@ with tab4:
             st.warning("Запрос пустой!")
         else:
             q = user_sql.strip()
-            # Проверяем, одиночный ли это SELECT
             is_select = q.lower().startswith(("select", "pragma", "explain", "with")) and ";" not in q.rstrip(";")
             
             try:
@@ -372,7 +456,6 @@ with tab4:
                         st.success(f"Запрос выполнен успешно! Найдено строк: **{len(df_res)}**")
                         st.dataframe(df_res, use_container_width=True)
                         
-                        # Возможность скачать выборку в CSV
                         csv = df_res.to_csv(index=False).encode('utf-8')
                         st.download_button(
                             "📥 Скачать результат в CSV",
@@ -381,7 +464,6 @@ with tab4:
                             mime="text/csv"
                         )
                     else:
-                        # Если это скрипт или DDL/DML операция
                         cursor.executescript(q)
                         conn.commit()
                         st.success("✅ Запрос / Скрипт успешно применен к базе данных!")
@@ -390,8 +472,8 @@ with tab4:
             except Exception as e:
                 st.error(f"❌ Ошибка выполнения SQL:\n\n`{str(e)}`")
 
-# --- ВКЛАДКА 5: ТАБЛИЦЫ БД ---
-with tab5:
+# --- ВКЛАДКА 6: ТАБЛИЦЫ БД ---
+with tab6:
     pks = {"game_settings": "key", "loot_tables": "id", "items": "item_id", "daily_dungeons": "day_index", "recipes": "recipe_id", "clans": "clan_id", "alchemy_ingredients": "item_id"}
     table_to_edit = st.selectbox("Таблица:", list(pks.keys()))
     df = fetch_table(table_to_edit)
@@ -405,8 +487,8 @@ with tab5:
         except Exception as e:
             st.error(f"Ошибка: {e}")
 
-# --- ВКЛАДКА 6: ЭКСПОРТ SQL ---
-with tab6:
+# --- ВКЛАДКА 7: ЭКСПОРТ SQL ---
+with tab7:
     st.subheader("📥 Выгрузка базы данных в формате SQL")
     st.markdown("Сгенерируйте и скачайте SQL-дамп текущей базы данных.")
 
@@ -459,3 +541,4 @@ with tab6:
         with st.expander("👀 Предпросмотр сгенерированного SQL (первые 100 строк)"):
             preview_lines = "\n".join(st.session_state['exported_sql'].splitlines()[:100])
             st.code(preview_lines, language="sql")
+

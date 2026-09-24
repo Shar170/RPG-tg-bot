@@ -8,9 +8,10 @@ router = Router()
 
 def get_tavern_kb(cost: int = 1):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"⛏️ Шахта", callback_data="mg_mine_start")],
-        [InlineKeyboardButton(text=f"🎲 Кости", callback_data="mg_dice_start")],
-        [InlineKeyboardButton(text=f"🔐 Взлом сундука", callback_data="mg_lock_start")],
+        [InlineKeyboardButton(text=f"⛏️ Шахта", callback_data="mg_mine_start"),
+         InlineKeyboardButton(text=f"🎲 Кости", callback_data="mg_dice_start")],
+        [InlineKeyboardButton(text=f"🔐 Взлом сундука", callback_data="mg_lock_start"),
+         InlineKeyboardButton(text=f"🎣 Озеро (Рыбалка)", callback_data="mg_fish_start")],
         [InlineKeyboardButton(text="🔙 Уйти на площадь", callback_data="town_back")]
     ])
 
@@ -126,10 +127,10 @@ async def mine_dig(callback: CallbackQuery):
     if found == "bomb":
         dmg = int(user.get('max_hp', 100) * 0.2)
         user['hp'] = max(1, user.get('hp', 100) - dmg)
-        home['mine_picks'] = 0 # Сжигаем все оставшиеся попытки
+        home['mine_picks'] = 0 
         update_user(user['user_id'], hp=user['hp'], home_data=home)
         await callback.answer(f"💥 ОБВАЛ! Вы потеряли {dmg} ХП!", show_alert=True)
-        return await mine_start(callback) # Выбрасываем в подменю шахты
+        return await mine_start(callback) 
         
     elif found == "gold":
         reward = random.randint(15, 30)
@@ -334,4 +335,128 @@ async def lock_input(callback: CallbackQuery):
     update_user(user['user_id'], home_data=home)
     await callback.answer()
     await render_lock(callback, user)
+
+
+# ==========================================
+# --- 4. РЫБАЛКА (Натяжение лески) ---
+# ==========================================
+@router.callback_query(F.data == "mg_fish_start")
+async def fish_start(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
+    e_cfg = get_energy_settings(user.get('level', 1))
+    cost = e_cfg["cost_minigame"]
+    
+    text = (
+        "🎣 **Подземное озеро**\n\n"
+        "В дальнем углу подвала таверны есть выход к подземной реке.\n"
+        "Закидывайте удочку и тяните леску! Главное — не порвать её (до 100%).\n"
+        "Чем сильнее натянута леска перед подсечкой, тем ценнее улов:\n\n"
+        "🐟 `50-79%` — Обычная рыба\n"
+        "💎 `80-100%` — Редкий сундук\n"
+        "💥 `>100%` — Леска рвется!\n\n"
+        f"Стоимость заброса: **{cost} ⚡**"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"🎣 Закинуть удочку ({cost} ⚡)", callback_data="mg_fish_play")],
+        [InlineKeyboardButton(text="🔙 Назад в таверну", callback_data="town_tavern")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+
+@router.callback_query(F.data == "mg_fish_play")
+async def fish_play(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
+    e_cfg = get_energy_settings(user.get('level', 1))
+    cost = e_cfg["cost_minigame"]
+    
+    if not consume_energy(user['user_id'], cost):
+        return await callback.answer(f"Недостаточно энергии (нужно {cost} ⚡)!", show_alert=True)
+    
+    await callback.answer()
+    
+    home = user.get('home_data', {})
+    home['fish_tension'] = 0
+    update_user(user['user_id'], home_data=home)
+    
+    await render_fish(callback, user)
+
+async def render_fish(callback: CallbackQuery, user: dict):
+    home = user.get('home_data', {})
+    tension = home.get('fish_tension', 0)
+    
+    filled = min(10, int((tension / 100) * 10))
+    bar = "🟥" * filled + "⬜" * (10 - filled)
+    
+    status = "Надежно" if tension < 50 else "Опасно!" if tension >= 80 else "Натянуто"
+    
+    text = (
+        f"🎣 **Рыбалка**\n\n"
+        f"Натяжение лески: **{tension}%** ({status})\n"
+        f"[{bar}]\n\n"
+        "Тяните осторожно, или доставайте улов!"
+    )
+    
+    buttons = [
+        [InlineKeyboardButton(text="🎣 Тянуть катушку (+15-35%)", callback_data="mg_fish_pull")],
+        [InlineKeyboardButton(text="🤚 Подсечь (Достать улов)", callback_data="mg_fish_catch")]
+    ]
+    
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
+
+@router.callback_query(F.data == "mg_fish_pull")
+async def fish_pull(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
+    home = user.get('home_data', {})
+    tension = home.get('fish_tension', 0)
+    
+    pull_power = random.randint(15, 35)
+    tension += pull_power
+    
+    if tension > 100:
+        home['fish_tension'] = 0
+        update_user(user['user_id'], home_data=home)
+        await callback.answer("💥 Леска порвалась!", show_alert=True)
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Попробовать еще", callback_data="mg_fish_start")],
+            [InlineKeyboardButton(text="🔙 В таверну", callback_data="town_tavern")]
+        ])
+        return await callback.message.edit_text(f"💥 **Срыв!**\n\nЛеска не выдержала натяжения в {tension}% и лопнула. Рыба ушла...", reply_markup=kb, parse_mode="Markdown")
+        
+    home['fish_tension'] = tension
+    update_user(user['user_id'], home_data=home)
+    await callback.answer()
+    await render_fish(callback, user)
+
+@router.callback_query(F.data == "mg_fish_catch")
+async def fish_catch(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
+    home = user.get('home_data', {})
+    tension = home.get('fish_tension', 0)
+    
+    home['fish_tension'] = 0
+    
+    if tension < 50:
+        msg = "Вы вытащили **Ржавый башмак**... Ничего ценного."
+        reward = ""
+    elif 50 <= tension < 80:
+        user['gold'] = user.get('gold', 0) + 50
+        inv = user.get('inventory', {})
+        inv.setdefault("potions", []).append("Сытное рагу")
+        user['inventory'] = inv
+        msg = "Вы вытащили **Озерную форель**!"
+        reward = "\n💰 +50 Золота\n🍲 +1 Сытное рагу"
+    else:
+        user['gold'] = user.get('gold', 0) + 150
+        user['gems'] = user.get('gems', 0) + 1
+        msg = "Вы вытащили со дна **Затопленный сундук**!"
+        reward = "\n💰 +150 Золота\n💎 +1 Алмаз"
+        
+    update_user(user['user_id'], gold=user.get('gold', 0), gems=user.get('gems', 0), inventory=user.get('inventory', {}), home_data=home)
+    await callback.answer("Улов пойман!", show_alert=False)
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Закинуть еще", callback_data="mg_fish_start")],
+        [InlineKeyboardButton(text="🔙 В таверну", callback_data="town_tavern")]
+    ])
+    await callback.message.edit_text(f"🎣 **Результат рыбалки (Натяжение: {tension}%)**\n\n{msg}{reward}", reply_markup=kb, parse_mode="Markdown")
 
