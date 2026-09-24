@@ -3,7 +3,7 @@ import random
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
-from database import get_connection, get_user, update_user, check_and_generate_quests, get_unlocked_titles, get_top_clans
+from database import get_connection, get_user, update_user, check_and_generate_quests, get_unlocked_titles, get_top_clans, get_recent_global_events, simulate_bot_activity
 
 router = Router()
 
@@ -34,6 +34,8 @@ def get_town_kb(user: dict) -> InlineKeyboardMarkup:
     return kb
 
 def generate_town_text(user: dict) -> str:
+    simulate_bot_activity() # Дергаем симуляцию жизни при загрузке города
+    
     xp = user.get('xp', 0)
     lvl = user.get('level', 1)
     max_xp = lvl * 100
@@ -53,6 +55,15 @@ def generate_town_text(user: dict) -> str:
             clans_text += f"{icon} {clan['name']} (Рейды: {clan['weekly_raids']})\n"
     else:
         clans_text = "\n\n🏆 **Топ-3 кланов недели:**\nПока нет активных кланов."
+        
+    # Вестник Камарии
+    events = get_recent_global_events(5)
+    log_text = "\n\n📰 **Вестник Камарии:**\n"
+    if events:
+        for e in events:
+            log_text += f"• {e}\n"
+    else:
+        log_text += "• В мире всё спокойно...\n"
     
     return (
         f"🏕️ **Лагерь Искателей (Камария)**\n\n"
@@ -60,7 +71,8 @@ def generate_town_text(user: dict) -> str:
         f"🌟 Опыт: `{xp_bar}` {xp}/{max_xp} XP\n"
         f"❤️ ХП: {user['hp']}/{user['max_hp']} | ⚡ ОД: {user.get('energy', 5)}/{user.get('max_energy', 5)}\n"
         f"💰 Золото: {user.get('gold', 0)} 🪙 | 💎 Кристаллы: {user.get('gems', 0)} 💎"
-        f"{clans_text}\n\n"
+        f"{clans_text}"
+        f"{log_text}\n"
         "Куда отправимся?"
     )
 

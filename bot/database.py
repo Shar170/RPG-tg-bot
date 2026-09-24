@@ -7,14 +7,16 @@ from config import DB_PATH
 from data.ingredients import INGREDIENTS
 
 def get_connection():
-    return sqlite3.connect(DB_PATH)
+    # timeout=10.0 заставляет SQLite подождать 10 секунд, если база занята другим запросом
+    return sqlite3.connect(DB_PATH, timeout=10.0)
 
 def init_db():
     with get_connection() as conn:
         cursor = conn.cursor()
         
-        # Безопасное добавление колонок для защиты от чизинга и PvP
         try: cursor.execute("ALTER TABLE users ADD COLUMN last_msg_id INTEGER DEFAULT 0")
+        except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE users ADD COLUMN is_bot INTEGER DEFAULT 0")
         except sqlite3.OperationalError: pass
         try: cursor.execute("ALTER TABLE pvp_matches ADD COLUMN match_state TEXT DEFAULT '{}'")
         except sqlite3.OperationalError: pass
@@ -26,7 +28,10 @@ def init_db():
             gold INTEGER, inventory TEXT, home_data TEXT, combat_data TEXT, known_traits TEXT, dungeon_data TEXT,
             level INTEGER DEFAULT 1, xp INTEGER DEFAULT 0, clan_id INTEGER DEFAULT 0, gems INTEGER DEFAULT 0, 
             quests_data TEXT DEFAULT '{}', clan_role TEXT DEFAULT 'thrall', energy INTEGER DEFAULT 5, 
-            last_energy_time INTEGER DEFAULT 0, last_msg_id INTEGER DEFAULT 0)''')
+            last_energy_time INTEGER DEFAULT 0, last_msg_id INTEGER DEFAULT 0, is_bot INTEGER DEFAULT 0)''')
+            
+        cursor.execute('''CREATE TABLE IF NOT EXISTS global_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, timestamp REAL)''')
             
         cursor.execute('''CREATE TABLE IF NOT EXISTS daily_dungeons (
             day_index INTEGER PRIMARY KEY, name TEXT, desc TEXT, mobs TEXT, loot_id TEXT, loot_name TEXT, boss_id TEXT, mob_modifier REAL)''')
@@ -50,7 +55,6 @@ def init_db():
             region_id INTEGER PRIMARY KEY, name TEXT, desc TEXT, target_clears INTEGER DEFAULT 100000, 
             current_clears INTEGER DEFAULT 0, is_liberated INTEGER DEFAULT 0, boss_id TEXT, mobs TEXT)''')
             
-        # Таблицы Арены
         cursor.execute('''CREATE TABLE IF NOT EXISTS arena_queue (
             user_id INTEGER PRIMARY KEY, level INTEGER, clan_id INTEGER, joined_at REAL)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS pvp_matches (
@@ -58,6 +62,88 @@ def init_db():
             p1_hp INTEGER, p2_hp INTEGER, p1_max INTEGER, p2_max INTEGER, 
             p1_ap INTEGER, p2_ap INTEGER, turn INTEGER, log TEXT, match_state TEXT DEFAULT '{}', last_action_time REAL DEFAULT 0)''')
         conn.commit()
+
+def add_global_event(text: str):
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO global_events (text, timestamp) VALUES (?, ?)", (text, time.time()))
+        cursor.execute("DELETE FROM global_events WHERE id NOT IN (SELECT id FROM global_events ORDER BY id DESC LIMIT 10)")
+        conn.commit()
+
+def get_recent_global_events(limit=5):
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT text FROM global_events ORDER BY timestamp DESC LIMIT ?", (limit,))
+        return [row[0] for row in cursor.fetchall()]
+
+def seed_bots():
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM users WHERE is_bot=1")
+        if cursor.fetchone()[0] > 0:
+            return
+
+        bot_clans = [("Орден Пепла", 3, 45), ("Тени Камарии", 4, 70), ("Стальные Волки", 2, 25)]
+        clan_ids = []
+        for c_name, c_lvl, c_raids in bot_clans:
+            cursor.execute("INSERT OR IGNORE INTO clans (name, leader_id, level, treasury, weekly_raids, join_requests, clan_vault) VALUES (?, ?, ?, 5000, ?, '[]', '{}')", (c_name, 0, c_lvl, c_raids))
+            cursor.execute("SELECT clan_id FROM clans WHERE name=?", (c_name,))
+            clan_ids.append(cursor.fetchone()[0])
+
+        bot_names = ["Kaelthas", "ShadowStrike", "Grommash", "Leroy", "Arthas", "Illidan", "Sylvanas", "Rexxar", "Guldan", "Jaina", "Uther", "Thrall", "Varian", "Garrosh", "Malfurion"]
+        
+        bot_base_id = 9000000
+        for i, name in enumerate(bot_names):
+            lvl = random.randint(10, 45)
+            max_hp = 100 + (lvl * 15)
+            clan_id = random.choice(clan_ids)
+            inv = json.dumps({"potions": ["Зелье: Хил", "Зелье: Хил", "Зелье: Хил", "Зелье: Реген ОД"]})
+            stats = json.dumps({"stats": {"pvp_wins": random.randint(5, 50), "bosses_killed": random.randint(10, 100)}})
+            
+            cursor.execute("""
+                INSERT OR IGNORE INTO users (user_id, username, state, hp, max_hp, level, gold, clan_id, inventory, home_data, is_bot)
+                VALUES (?, ?, 'STATE_TOWN', ?, ?, ?, ?, ?, ?, ?, 1)
+            """, (bot_base_id + i, name, max_hp, max_hp, lvl, random.randint(1000, 5000), clan_id, inv, stats))
+            
+            if i < len(clan_ids):
+                cursor.execute("UPDATE clans SET leader_id = ? WHERE clan_id = ?", (bot_base_id + i, clan_ids[i]))
+        conn.commit()
+
+def simulate_bot_activity():
+    last_sim = float(get_setting("last_bot_sim", "0"))
+    now = time.time()
+    
+    if now - last_sim < 3600:
+        return
+
+    events_to_add = []
+    
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT username, clan_id FROM users WHERE is_bot=1 ORDER BY RANDOM() LIMIT 3")
+        bots = cursor.fetchall()
+        
+        for bot_name, clan_id in bots:
+            action = random.choice(["war", "arena", "dungeon", "craft"])
+            if action == "war":
+                cursor.execute("SELECT region_id, name FROM war_regions WHERE is_liberated=0 ORDER BY RANDOM() LIMIT 1")
+                reg = cursor.fetchone()
+                if reg:
+                    cursor.execute("UPDATE war_regions SET current_clears = current_clears + ? WHERE region_id=?", (random.randint(15, 40), reg[0]))
+                    events_to_add.append(f"🌍 Игрок **{bot_name}** внес крупный вклад в освобождение региона [{reg[1]}].")
+            elif action == "dungeon":
+                if clan_id != 0:
+                    cursor.execute("UPDATE clans SET weekly_raids = weekly_raids + ? WHERE clan_id=?", (random.randint(5, 12), clan_id))
+                events_to_add.append(f"💀 Игрок **{bot_name}** зачистил опасное подземелье и добыл редкие реагенты.")
+            elif action == "craft":
+                events_to_add.append(f"🔨 Игрок **{bot_name}** создал Легендарное снаряжение в Мастерской.")
+        
+        cursor.execute("INSERT OR REPLACE INTO game_settings (key, value) VALUES ('last_bot_sim', ?)", (str(now),))
+        conn.commit()
+
+    # Вызываем запись в лог за пределами открытой транзакции
+    for evt in events_to_add:
+        add_global_event(evt)
 
 def seed_all():
     with get_connection() as conn:
@@ -168,6 +254,8 @@ def seed_all():
         ]
         cursor.executemany("INSERT OR REPLACE INTO recipes VALUES (?, ?, ?, ?)", recipes)
         conn.commit()
+        
+        seed_bots()
 
 def check_and_distribute_weekly_clan_rewards():
     today = datetime.date.today()
@@ -505,7 +593,6 @@ def apply_death_penalty(user_id: int, dungeon_data: dict):
         elif e_id in inv.get("artifacts", []): inv["artifacts"].remove(e_id)
     update_user(user_id, gold=user['gold'], hp=max(1, int(user['max_hp'] * 0.5)), inventory=inv)
 
-# --- НОВЫЕ ХЕЛПЕРЫ АРЕНЫ ---
 def get_pvp_match(match_id: int):
     with get_connection() as conn:
         cursor = conn.cursor()

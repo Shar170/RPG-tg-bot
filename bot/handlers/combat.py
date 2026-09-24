@@ -5,7 +5,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardBut
 from database import (
     get_user, update_user, get_item, get_loot_table, get_item_name, get_setting,
     apply_flee_penalty, apply_death_penalty, add_quest_progress, get_clan, update_clan,
-    calculate_damage_received, progress_war_region, track_stat
+    calculate_damage_received, progress_war_region, track_stat, add_global_event
 )
 
 router = Router()
@@ -126,12 +126,20 @@ async def handle_combat_victory(callback: CallbackQuery, user_id: int, combat: d
             drop_msg += f"\n✨ Выбито: **{get_item_name(loot['item_id'])}** (x{qty})"
             dropped_count += 1
 
+    # --- ЗАПИСЬ СОБЫТИЙ В ВЕСТНИК ---
     if dungeon_data.get('dungeon_type') == 'war' and is_boss:
         home, bonus_gems = progress_war_region(dungeon_data['war_region_id'], user_id, home_data=home)
         fresh_user['gems'] = fresh_user.get('gems', 0) + bonus_gems
         drop_msg += "\n\n🌍 **Вклад в освобождение региона засчитан!** Медаль добавлена на Стенд Славы в доме."
+        
+        add_global_event(f"🌍 Игрок **{fresh_user['username']}** нанес сокрушительный удар по силам демонов в Войне за Камарию!")
+        
         if bonus_gems > 0:
             drop_msg += f"\n🏆 **РЕГИОН ПОЛНОСТЬЮ ОСВОБОЖДЕН!** Награда: +{bonus_gems} 💎!"
+            add_global_event(f"🏆 Великий герой **{fresh_user['username']}** нанес решающий удар и полностью ОСВОБОДИЛ один из регионов!")
+            
+    elif is_boss and dungeon_data.get('dungeon_type') == 'event':
+        add_global_event(f"💀 Игрок **{fresh_user['username']}** бросил вызов Боссу Дня и вышел победителем!")
 
     update_user(
         user_id,

@@ -1,9 +1,13 @@
 import time
 import json
 import random
+import asyncio
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from database import get_user, update_user, get_connection, get_pvp_match, update_pvp_match, remove_from_queue, track_stat
+from database import (
+    get_user, update_user, get_connection, get_pvp_match, update_pvp_match, 
+    remove_from_queue, track_stat, add_global_event, get_item, get_setting, calculate_damage_received
+)
 
 router = Router()
 
@@ -39,18 +43,24 @@ async def arena_join(callback: CallbackQuery):
     my_lvl = user['level']
     my_clan = user.get('clan_id', 0)
     
-    # Списываем взнос
     user['gold'] -= 100
     update_user(user['user_id'], gold=user['gold'])
     
     with get_connection() as conn:
         cursor = conn.cursor()
+        
         cursor.execute("""
             SELECT user_id FROM arena_queue 
             WHERE user_id != ? AND (clan_id != ? OR clan_id = 0)
             ORDER BY ABS(level - ?) ASC LIMIT 1
         """, (user['user_id'], my_clan, my_lvl))
         match = cursor.fetchone()
+        
+        if not match:
+            cursor.execute("SELECT user_id FROM users WHERE is_bot=1 AND ABS(level - ?) <= 5 ORDER BY RANDOM() LIMIT 1", (my_lvl,))
+            bot_match = cursor.fetchone()
+            if bot_match:
+                match = bot_match
         
         if match:
             opp_id = match[0]
@@ -66,7 +76,8 @@ async def arena_join(callback: CallbackQuery):
             conn.commit()
             
             update_user(user['user_id'], state='STATE_PVP', combat_data={"pvp_match_id": match_id})
-            update_user(opp_id, state='STATE_PVP', combat_data={"pvp_match_id": match_id})
+            if opp.get('is_bot', 0) == 0:
+                update_user(opp_id, state='STATE_PVP', combat_data={"pvp_match_id": match_id})
             
             await render_pvp(callback.bot, match_id)
             await callback.answer()
@@ -84,7 +95,6 @@ async def arena_cancel(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     remove_from_queue(user['user_id'])
     
-    # Возврат взноса
     user['gold'] += 100
     update_user(user['user_id'], state='STATE_TOWN', gold=user['gold'])
     
@@ -132,7 +142,6 @@ async def pvp_noop(callback: CallbackQuery):
     if not match: 
         return await callback.answer("Матч не найден!", show_alert=True)
         
-    # Проверка на AFK (5 минут)
     elapsed = time.time() - match.get('last_action_time', time.time())
     if elapsed > 300:
         await end_pvp_draw(callback.bot, match_id, "Один из игроков покинул Арену (AFK 5 минут).")
@@ -168,52 +177,174 @@ async def render_pvp(bot, match_id: int):
         f"💬 {match['log']}"
     )
     
-    try: await bot.edit_message_text(p1_text, chat_id=p1['user_id'], message_id=p1['last_msg_id'], reply_markup=get_pvp_kb(p1_turn, match['p1_ap'], state.get('distance', 'close')), parse_mode="Markdown")
-    except Exception: pass
+    if p1.get('is_bot', 0) == 0:
+        try: await bot.edit_message_text(p1_text, chat_id=p1['user_id'], message_id=p1['last_msg_id'], reply_markup=get_pvp_kb(p1_turn, match['p1_ap'], state.get('distance', 'close')), parse_mode="Markdown")
+        except Exception: pass
     
-    try: await bot.edit_message_text(p2_text, chat_id=p2['user_id'], message_id=p2['last_msg_id'], reply_markup=get_pvp_kb(p2_turn, match['p2_ap'], state.get('distance', 'close')), parse_mode="Markdown")
-    except Exception: pass
+    if p2.get('is_bot', 0) == 0:
+        try: await bot.edit_message_text(p2_text, chat_id=p2['user_id'], message_id=p2['last_msg_id'], reply_markup=get_pvp_kb(p2_turn, match['p2_ap'], state.get('distance', 'close')), parse_mode="Markdown")
+        except Exception: pass
 
 async def end_pvp_match(bot, match_id: int, winner_id: int, loser_id: int, reason_log: str):
     winner = get_user(winner_id)
     loser = get_user(loser_id)
     
-    reward = 200 # Победитель забирает свой взнос (100) + взнос проигравшего (100)
+    reward = 200
     winner['gold'] += reward
     track_stat(winner_id, 'pvp_wins', 1)
     
-    update_user(winner_id, state='STATE_TOWN', gold=winner['gold'], combat_data={})
-    update_user(loser_id, state='STATE_TOWN', combat_data={})
+    if winner.get('is_bot', 0) == 0:
+        update_user(winner_id, state='STATE_TOWN', gold=winner['gold'], combat_data={})
+        add_global_event(f"⚔️ Гладиатор **{winner['username']}** одержал славную победу на Арене!")
+    if loser.get('is_bot', 0) == 0:
+        update_user(loser_id, state='STATE_TOWN', combat_data={})
     
     from handlers.town import get_town_kb
     win_txt = f"🏆 **ПОБЕДА!**\n{reason_log}\nВы забрали банк арены: **+{reward} 🪙**."
     lose_txt = f"☠️ **ПОРАЖЕНИЕ!**\n{reason_log}\nВаш взнос в 100 🪙 достался противнику."
     
-    try: await bot.edit_message_text(win_txt, chat_id=winner_id, message_id=winner['last_msg_id'], reply_markup=get_town_kb(winner), parse_mode="Markdown")
-    except Exception: pass
-    try: await bot.edit_message_text(lose_txt, chat_id=loser_id, message_id=loser['last_msg_id'], reply_markup=get_town_kb(loser), parse_mode="Markdown")
-    except Exception: pass
+    if winner.get('is_bot', 0) == 0:
+        try: await bot.edit_message_text(win_txt, chat_id=winner_id, message_id=winner['last_msg_id'], reply_markup=get_town_kb(winner), parse_mode="Markdown")
+        except Exception: pass
+    if loser.get('is_bot', 0) == 0:
+        try: await bot.edit_message_text(lose_txt, chat_id=loser_id, message_id=loser['last_msg_id'], reply_markup=get_town_kb(loser), parse_mode="Markdown")
+        except Exception: pass
 
 async def end_pvp_draw(bot, match_id: int, reason_log: str):
     match = get_pvp_match(match_id)
     p1 = get_user(match['p1_id'])
     p2 = get_user(match['p2_id'])
     
-    # Возврат взноса обоим
-    p1['gold'] += 100
-    p2['gold'] += 100
+    if p1.get('is_bot', 0) == 0: p1['gold'] += 100
+    if p2.get('is_bot', 0) == 0: p2['gold'] += 100
     
-    update_user(p1['user_id'], state='STATE_TOWN', gold=p1['gold'], combat_data={})
-    update_user(p2['user_id'], state='STATE_TOWN', gold=p2['gold'], combat_data={})
+    if p1.get('is_bot', 0) == 0: update_user(p1['user_id'], state='STATE_TOWN', gold=p1['gold'], combat_data={})
+    if p2.get('is_bot', 0) == 0: update_user(p2['user_id'], state='STATE_TOWN', gold=p2['gold'], combat_data={})
     
     from handlers.town import get_town_kb
     draw_txt = f"🤝 **ТЕХНИЧЕСКАЯ НИЧЬЯ!**\n{reason_log}\nВам возвращен взнос 100 🪙."
     
-    try: await bot.edit_message_text(draw_txt, chat_id=p1['user_id'], message_id=p1['last_msg_id'], reply_markup=get_town_kb(p1), parse_mode="Markdown")
-    except Exception: pass
-    try: await bot.edit_message_text(draw_txt, chat_id=p2['user_id'], message_id=p2['last_msg_id'], reply_markup=get_town_kb(p2), parse_mode="Markdown")
-    except Exception: pass
+    if p1.get('is_bot', 0) == 0:
+        try: await bot.edit_message_text(draw_txt, chat_id=p1['user_id'], message_id=p1['last_msg_id'], reply_markup=get_town_kb(p1), parse_mode="Markdown")
+        except Exception: pass
+    if p2.get('is_bot', 0) == 0:
+        try: await bot.edit_message_text(draw_txt, chat_id=p2['user_id'], message_id=p2['last_msg_id'], reply_markup=get_town_kb(p2), parse_mode="Markdown")
+        except Exception: pass
 
+# --- ЛОГИКА ИСКУССТВЕННОГО ИНТЕЛЛЕКТА (БОТА) ---
+async def process_bot_turn(bot, match_id: int):
+    await asyncio.sleep(random.uniform(2.5, 6.0))
+    
+    match = get_pvp_match(match_id)
+    if not match: return
+    
+    bot_user = get_user(match['turn'])
+    if bot_user.get('is_bot', 0) == 0: return 
+        
+    is_p1 = (bot_user['user_id'] == match['p1_id'])
+    ap_key = 'p1_ap' if is_p1 else 'p2_ap'
+    
+    if match[ap_key] < 2:
+        return await finalize_bot_turn(bot, match_id, is_p1, bot_user)
+        
+    state = json.loads(match.get('match_state', '{}'))
+    my_buffs = state.get('p1' if is_p1 else 'p2', {})
+    opp_buffs = state.get('p2' if is_p1 else 'p1', {})
+    
+    log = ""
+    my_hp = match['p1_hp'] if is_p1 else 'p2_hp'
+    my_max = match['p1_max'] if is_p1 else 'p2_max'
+    
+    if match[my_hp] < (match[my_max] * 0.3) and match[ap_key] >= 1:
+        match[my_hp] += int(match[my_max] * 0.25)
+        match[ap_key] -= 1
+        log = f"🧪 {bot_user['username']} выпил зелье лечения!\n"
+    
+    if state.get('distance', 'close') == "far" and match[ap_key] >= 1:
+        state['distance'] = "close"
+        match[ap_key] -= 1
+        log += f"⚔️ {bot_user['username']} бросился вперед! Ближний бой.\n"
+        
+    if match[ap_key] >= 2:
+        if opp_buffs.get('buff_dodge', 0) > 0 and random.random() < 0.35:
+            log += f"💨 Противник ловко увернулся от атаки {bot_user['username']}!"
+            dmg = 0
+        else:
+            row_mult = 1.0 if state.get('distance', 'close') == "close" else 0.5
+            
+            # Бот теперь тоже использует оружие! Если его нет, бьет кулаками.
+            inv = bot_user['inventory']
+            weapon_id = inv.get("equipment", {}).get("weapon")
+            weapon_data = get_item(weapon_id) if weapon_id else None
+            
+            base_dmg = int(get_setting("base_unarmed_dmg", "5")) + (bot_user.get('level', 1) * 2) + random.randint(0, 3)
+            w_dmg = weapon_data['stats'].get('dmg', 0) if weapon_data else 0
+            
+            raw_dmg = int((base_dmg + w_dmg) * row_mult)
+            if opp_buffs.get('debuff_vuln', 0) > 0: raw_dmg = int(raw_dmg * 1.25)
+            
+            # Считаем броню игрока
+            opp_user = get_user(match['p2_id'] if is_p1 else match['p1_id'])
+            opp_inv = opp_user['inventory']
+            opp_armor_id = opp_inv.get("equipment", {}).get("armor")
+            opp_armor_data = get_item(opp_armor_id) if opp_armor_id else None
+            base_armor = opp_armor_data['stats'].get('def', 0) if opp_armor_data else 0
+            
+            if opp_buffs.get('debuff_fragile', 0) > 0: base_armor = int(base_armor * 0.5)
+            
+            total_armor = base_armor + opp_buffs.get('buff_armor', 0)
+            dmg = calculate_damage_received(raw_dmg, total_armor)
+            
+            log += f"🗡️ {bot_user['username']} пробивает вашу броню на {dmg} урона!"
+            
+        match[ap_key] -= 2
+        if is_p1: match['p2_hp'] -= dmg
+        else: match['p1_hp'] -= dmg
+            
+    if is_p1: update_pvp_match(match_id, p1_hp=match['p1_hp'], p2_hp=match['p2_hp'], p1_ap=match['p1_ap'], match_state=json.dumps(state), log=log, last_action_time=time.time())
+    else: update_pvp_match(match_id, p1_hp=match['p1_hp'], p2_hp=match['p2_hp'], p2_ap=match['p2_ap'], match_state=json.dumps(state), log=log, last_action_time=time.time())
+
+    if match['p2_hp' if is_p1 else 'p1_hp'] <= 0:
+        return await end_pvp_match(bot, match_id, bot_user['user_id'], match['p2_id' if is_p1 else 'p1_id'], log)
+        
+    await finalize_bot_turn(bot, match_id, is_p1, bot_user)
+
+async def finalize_bot_turn(bot, match_id: int, is_p1: bool, bot_user: dict):
+    match = get_pvp_match(match_id)
+    next_turn = match['p2_id'] if is_p1 else match['p1_id']
+    
+    state = json.loads(match.get('match_state', '{}'))
+    opp_key = 'p2' if is_p1 else 'p1'
+    opp_buffs = state.setdefault(opp_key, {})
+    
+    dot_dmg = 0
+    if opp_buffs.get('dot_burn', 0) > 0: dot_dmg += 15; opp_buffs['dot_burn'] -= 1
+    if opp_buffs.get('dot_poison', 0) > 0: dot_dmg += 12; opp_buffs['dot_poison'] -= 1
+    if opp_buffs.get('dot_bleed', 0) > 0: dot_dmg += 10; opp_buffs['dot_bleed'] -= 1
+    
+    log = match['log'] + f"\n⏳ {bot_user['username']} завершил ход."
+    if dot_dmg > 0:
+        log += f"\n🩸 Вы получили {dot_dmg} урона от эффектов!"
+        if is_p1: match['p2_hp'] -= dot_dmg
+        else: match['p1_hp'] -= dot_dmg
+
+    for buff_t in ['buff_armor_t', 'buff_str_t', 'buff_dodge_t', 'debuff_blind', 'debuff_fragile', 'debuff_vuln']:
+        if opp_buffs.get(buff_t, 0) > 0:
+            opp_buffs[buff_t] -= 1
+            if opp_buffs[buff_t] == 0:
+                attr = buff_t.replace('_t', '')
+                opp_buffs[attr] = 0
+
+    if match['p2_hp'] <= 0: return await end_pvp_match(bot, match_id, match['p1_id'], match['p2_id'], log)
+    if match['p1_hp'] <= 0: return await end_pvp_match(bot, match_id, match['p2_id'], match['p1_id'], log)
+    
+    if is_p1: update_pvp_match(match_id, p1_ap=3, p2_hp=match['p2_hp'], turn=next_turn, match_state=json.dumps(state), log=log, last_action_time=time.time())
+    else: update_pvp_match(match_id, p2_ap=3, p1_hp=match['p1_hp'], turn=next_turn, match_state=json.dumps(state), log=log, last_action_time=time.time())
+        
+    await render_pvp(bot, match_id)
+
+
+# --- ДЕЙСТВИЯ ИГРОКА ---
 @router.callback_query(F.data == "pvp_move")
 async def pvp_move(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
@@ -265,16 +396,37 @@ async def pvp_attack(callback: CallbackQuery):
         log = f"💨 Противник ловко увернулся от атаки {user['username']}!"
         dmg = 0
     else:
+        # Учет экипированного оружия
+        inv = user['inventory']
+        weapon_id = inv.get("equipment", {}).get("weapon")
+        weapon_data = get_item(weapon_id) if weapon_id else None
+        
+        base_dmg = int(get_setting("base_unarmed_dmg", "5")) + (user.get('level', 1) * 2) + random.randint(0, 3)
+        w_dmg = weapon_data['stats'].get('dmg', 0) if weapon_data else 0
+        w_range = weapon_data['stats'].get('range', 'melee') if weapon_data else 'melee'
+        
         distance = state.get('distance', 'close')
-        row_mult = 1.0 if distance == "close" else 0.5
+        row_mult = (1.0 if distance == "close" else 0.3) if w_range == "melee" else (1.0 if distance == "far" else 0.5)
         
-        base_dmg = 15 + (user.get('level', 1) * 2)
         extra_str = my_buffs.get('buff_str', 0)
-        dmg = int((base_dmg + extra_str) * row_mult)
+        raw_dmg = int((base_dmg + w_dmg + extra_str) * row_mult)
         
-        if opp_buffs.get('debuff_vuln', 0) > 0: dmg = int(dmg * 1.25)
+        if opp_buffs.get('debuff_vuln', 0) > 0: raw_dmg = int(raw_dmg * 1.25)
         
-        log = f"🗡️ {user['username']} наносит {dmg} урона!"
+        # Расчет брони противника
+        opp_user = get_user(match['p2_id'] if is_p1 else match['p1_id'])
+        opp_inv = opp_user['inventory']
+        opp_armor_id = opp_inv.get("equipment", {}).get("armor")
+        opp_armor_data = get_item(opp_armor_id) if opp_armor_id else None
+        base_armor = opp_armor_data['stats'].get('def', 0) if opp_armor_data else 0
+        
+        if opp_buffs.get('debuff_fragile', 0) > 0:
+            base_armor = int(base_armor * 0.5)
+            
+        total_armor = base_armor + opp_buffs.get('buff_armor', 0)
+        dmg = calculate_damage_received(raw_dmg, total_armor)
+        
+        log = f"🗡️ {user['username']} пробивает броню на {dmg} урона!"
         if extra_str > 0: log += f" (+Сила)"
         if row_mult < 1.0: log += " (Штраф дистанции)"
     
@@ -426,6 +578,10 @@ async def pvp_end_turn(callback: CallbackQuery):
         
     await render_pvp(callback.bot, match_id)
     await callback.answer()
+    
+    next_user = get_user(next_turn)
+    if next_user.get('is_bot', 0) == 1:
+        asyncio.create_task(process_bot_turn(callback.bot, match_id))
 
 @router.callback_query(F.data == "pvp_surrender")
 async def pvp_surrender(callback: CallbackQuery):

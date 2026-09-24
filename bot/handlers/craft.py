@@ -1,6 +1,6 @@
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from database import get_user, update_user, get_all_recipes, get_item, get_item_name, add_quest_progress
+from database import get_user, update_user, get_all_recipes, get_item, get_item_name, add_quest_progress, add_global_event
 
 router = Router()
 
@@ -57,6 +57,10 @@ async def do_craft(callback: CallbackQuery):
     
     # ПРОГРЕСС КВЕСТОВ (Крафт)
     add_quest_progress(user['user_id'], "craft_items", 1)
+    
+    # --- ЗАПИСЬ В ВЕСТНИК ---
+    if result_item['type'] in ["weapon", "armor"] and recipe['gold'] >= 1000:
+        add_global_event(f"🔨 Мастер **{user['username']}** выковал ценное снаряжение: {result_item['name']}.")
     
     await callback.answer(f"✨ Создано: {result_item['name']}!", show_alert=True)
     await open_workshop(callback)
