@@ -1,4 +1,5 @@
 import json
+import datetime
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
@@ -6,7 +7,8 @@ from aiogram.fsm.state import StatesGroup, State
 from database import (
     get_user, update_user, get_clan, update_clan, 
     get_clan_by_name, get_all_clans_ranked, get_clan_members,
-    get_connection, get_clan_creation_requirements, get_item_name
+    get_connection, get_clan_creation_requirements, get_item_name,
+    get_clan_merchant_deals, get_item_price, get_item
 )
 
 router = Router()
@@ -17,6 +19,8 @@ class ClanStates(StatesGroup):
     waiting_for_gems = State()
     waiting_for_withdraw_gold = State()
     waiting_for_withdraw_gems = State()
+    waiting_for_banner = State()
+    waiting_for_chat_msg = State()
 
 def format_clan_requirements_text(reqs: dict, short: bool = False) -> str:
     parts = []
@@ -51,7 +55,7 @@ def get_clan_main_kb(user: dict):
 # --- ГЛАВНЫЙ ВХОД В КЛАНОВЫЙ ЗАЛ ---
 @router.callback_query(F.data == "clan_main")
 async def clan_main_menu(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
+    if state: await state.clear()
     user = get_user(callback.from_user.id)
     clan_id = user.get('clan_id', 0)
     
@@ -66,8 +70,9 @@ async def clan_main_menu(callback: CallbackQuery, state: FSMContext):
     )
     if clan_id != 0:
         clan = get_clan(clan_id)
+        banner = f"{clan.get('banner', '')} " if clan and clan.get('banner') else ""
         c_name = clan['name'] if clan else "Неизвестно"
-        text += f"Вы состоите в клане: **{c_name}**"
+        text += f"Вы состоите в клане: **{banner}{c_name}**"
     else:
         reqs = get_clan_creation_requirements()
         reqs_str = format_clan_requirements_text(reqs, short=False)
@@ -166,9 +171,10 @@ async def show_my_clan(callback: CallbackQuery, state: FSMContext):
         members_text += f" • {r_str} **{m['username']}** (Ур. {m['level']})\n"
         
     reqs_count = len(clan.get('join_requests', []))
+    banner_str = f"{clan.get('banner', '')} " if clan.get('banner') else ""
     
     text = (
-        f"🏰 **Клан: {clan['name']}**\n\n"
+        f"🏰 **Клан: {banner_str}{clan['name']}**\n\n"
         f"Уровень: **{clan['level']}**\n"
         f"Рейдов за всё время: **{clan.get('total_raids', 0)}**\n"
         f"Бойцов: **{len(members)} / {max_m}**\n\n"
@@ -178,7 +184,16 @@ async def show_my_clan(callback: CallbackQuery, state: FSMContext):
         text += f"📬 **Входящие заявки:** {reqs_count} шт.\n"
         
     buttons = []
+    # --- НОВЫЕ КНОПКИ: ЧАТ И ТОРГОВЕЦ ---
+    buttons.append([InlineKeyboardButton(text="💬 Чат клана", callback_data="clan_chat_view")])
+    
+    if clan['level'] >= 5:
+        buttons.append([InlineKeyboardButton(text="⚖️ Клановый Торговец", callback_data="clan_merchant_view")])
+        
     if is_leader:
+        # Установка стяга со 2 уровня
+        if clan['level'] >= 2:
+            buttons.append([InlineKeyboardButton(text="🏳️ Изменить стяг", callback_data="clan_set_banner_ask")])
         buttons.append([InlineKeyboardButton(text="🔼 Улучшить клан", callback_data="clan_upgrade_ask")])
         if reqs_count > 0:
             buttons.append([InlineKeyboardButton(text=f"📬 Заявки ({reqs_count})", callback_data="clan_requests_view")])
@@ -191,6 +206,182 @@ async def show_my_clan(callback: CallbackQuery, state: FSMContext):
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="clan_main")])
     
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
+
+# --- СТЯГ КЛАНА ---
+@router.callback_query(F.data == "clan_set_banner_ask")
+async def clan_set_banner_ask(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(ClanStates.waiting_for_banner)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="clan_my_info")]])
+    await callback.message.edit_text("🏳️ **Установка стяга клана**\n\nОтправьте 1 или 2 эмодзи (например, 🐺 или ⚔️), которые будут отображаться рядом с названием клана:", reply_markup=kb, parse_mode="Markdown")
+
+@router.message(ClanStates.waiting_for_banner)
+async def clan_set_banner_do(message: Message, state: FSMContext):
+    user = get_user(message.from_user.id)
+    clan = get_clan(user.get('clan_id', 0))
+    
+    if not clan or clan['leader_id'] != user['user_id']:
+        return await message.answer("Только лидер может изменять стяг!")
+        
+    banner = message.text.strip()
+    if len(banner) > 4: # Emoji могут занимать несколько байт, 4 - безопасный лимит для 1-2 эмодзи
+        return await message.answer("⚠️ Слишком длинный стяг! Попробуйте использовать 1-2 эмодзи.")
+        
+    update_clan(clan['clan_id'], banner=banner)
+    await state.clear()
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 В клан", callback_data="clan_my_info")]])
+    await message.answer(f"✅ Стяг клана успешно изменен на {banner}!", reply_markup=kb)
+
+# --- ЧАТ КЛАНА ---
+@router.callback_query(F.data == "clan_chat_view")
+async def clan_chat_view(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
+    clan = get_clan(user.get('clan_id', 0))
+    if not clan: return await callback.answer("У вас нет клана!", show_alert=True)
+    
+    chat = clan.get('chat_history', [])
+    banner_str = f"{clan.get('banner', '')} " if clan.get('banner') else ""
+    text = f"💬 **Чат клана: {banner_str}{clan['name']}**\n\n"
+    
+    if not chat:
+        text += "*Сообщений пока нет...*\n"
+    else:
+        for msg in chat[-15:]: # Показываем последние 15
+            text += f"👤 **{msg['user']}** `[{msg['time']}]`:\n{msg['text']}\n\n"
+            
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✍️ Написать сообщение", callback_data="clan_chat_write")],
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="clan_chat_view")],
+        [InlineKeyboardButton(text="🔙 В меню клана", callback_data="clan_my_info")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+
+@router.callback_query(F.data == "clan_chat_write")
+async def clan_chat_write(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(ClanStates.waiting_for_chat_msg)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="clan_chat_view")]])
+    await callback.message.edit_text("✍️ Введите ваше сообщение для клана (до 200 символов):", reply_markup=kb, parse_mode="Markdown")
+
+@router.message(ClanStates.waiting_for_chat_msg)
+async def clan_chat_receive(message: Message, state: FSMContext):
+    user = get_user(message.from_user.id)
+    clan = get_clan(user.get('clan_id', 0))
+    if not clan: return
+    
+    chat = clan.get('chat_history', [])
+    now_str = datetime.datetime.now().strftime("%H:%M")
+    
+    new_msg = {
+        "user": user['username'],
+        "text": message.text[:200], # Защита от спама длинным текстом
+        "time": now_str
+    }
+    
+    chat.append(new_msg)
+    chat = chat[-50:] # Храним только последние 50 в базе
+    
+    update_clan(clan['clan_id'], chat_history=chat)
+    await state.clear()
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Открыть чат", callback_data="clan_chat_view")]])
+    await message.answer("✅ Сообщение отправлено в клан!", reply_markup=kb)
+
+# --- КЛАНОВЫЙ ТОРГОВЕЦ ---
+@router.callback_query(F.data == "clan_merchant_view")
+async def clan_merchant_view(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
+    clan = get_clan(user.get('clan_id', 0))
+    
+    if not clan or clan['level'] < 5:
+        return await callback.answer("Торговец прибывает только в кланы 5-го уровня и выше!", show_alert=True)
+        
+    deals = get_clan_merchant_deals(clan['clan_id'])
+    
+    text = f"⚖️ **Клановый Торговец**\n💰 Ваше золото: {user['gold']} 🪙\n\n"
+    buttons = []
+    
+    if clan['level'] >= 20:
+        text += (
+            "🌟 **Элитный доступ (Ур. 20):**\n"
+            "Торговец теперь предоставляет постоянную **скидку 30%** на покупку и скупает лут по **100% стоимости** на ВСЕ возможные товары!\n\n"
+            "*(Все клановые сделки теперь проходят через основной Городской Рынок, скидки активированы автоматически)*\n"
+        )
+        buttons.append([InlineKeyboardButton(text="⚖️ Перейти на Городской Рынок", callback_data="town_market")])
+    else:
+        text += "Торговец предлагает особые сделки на случайные товары, которые обновляются каждую полночь!\n\n"
+        
+        text += "🛒 **Товары со скидкой 30%:**\n"
+        for i_id in deals.get('buy', []):
+            price = max(1, int(get_item_price(i_id) * 0.7))
+            text += f"• {get_item_name(i_id)} — {price} 🪙\n"
+            buttons.append([InlineKeyboardButton(text=f"Купить: {get_item_name(i_id)}", callback_data=f"c_merch_buy_{i_id}")])
+            
+        text += "\n💎 **Скупка без штрафа (100% цены):**\n"
+        for i_id in deals.get('sell', []):
+            price = get_item_price(i_id)
+            text += f"• {get_item_name(i_id)} — {price} 🪙\n"
+            buttons.append([InlineKeyboardButton(text=f"Продать: {get_item_name(i_id)}", callback_data=f"c_merch_sell_{i_id}")])
+            
+    buttons.append([InlineKeyboardButton(text="🔙 В меню клана", callback_data="clan_my_info")])
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
+
+@router.callback_query(F.data.startswith("c_merch_buy_"))
+async def clan_merchant_buy(callback: CallbackQuery):
+    i_id = callback.data.replace("c_merch_buy_", "")
+    user = get_user(callback.from_user.id)
+    price = max(1, int(get_item_price(i_id) * 0.7))
+    
+    if user['gold'] < price:
+        return await callback.answer("Недостаточно золота!", show_alert=True)
+        
+    item = get_item(i_id)
+    inv = user['inventory']
+    
+    if item and item['type'] in ["weapon", "armor"]:
+        inv.setdefault("backpack", []).append(i_id)
+    elif item and item['type'] == "consumable":
+        inv.setdefault("potions", []).append(item['name'])
+    else:
+        # Ресурс или ингредиент
+        inv.setdefault("materials", {})[i_id] = inv.get("materials", {}).get(i_id, 0) + 1
+        
+    user['gold'] -= price
+    update_user(user['user_id'], gold=user['gold'], inventory=inv)
+    await callback.answer(f"Успешная покупка: {get_item_name(i_id)} за {price} 🪙", show_alert=True)
+    await clan_merchant_view(callback)
+
+@router.callback_query(F.data.startswith("c_merch_sell_"))
+async def clan_merchant_sell(callback: CallbackQuery):
+    i_id = callback.data.replace("c_merch_sell_", "")
+    user = get_user(callback.from_user.id)
+    
+    inv = user['inventory']
+    has_item = False
+    
+    if i_id in inv.get("backpack", []):
+        inv["backpack"].remove(i_id)
+        has_item = True
+    elif inv.get("materials", {}).get(i_id, 0) > 0:
+        inv["materials"][i_id] -= 1
+        if inv["materials"][i_id] <= 0: del inv["materials"][i_id]
+        has_item = True
+    else:
+        # Проверка зелий по имени (если это расходник)
+        item_name = get_item_name(i_id)
+        if item_name in inv.get("potions", []):
+            inv["potions"].remove(item_name)
+            has_item = True
+
+    if not has_item:
+        return await callback.answer("У вас нет этого предмета для продажи!", show_alert=True)
+        
+    price = get_item_price(i_id)
+    user['gold'] += price
+    
+    update_user(user['user_id'], gold=user['gold'], inventory=inv)
+    await callback.answer(f"Успешно продано за {price} 🪙", show_alert=True)
+    await clan_merchant_view(callback)
+
 
 # --- ПРОКАЧКА КЛАНА ---
 @router.callback_query(F.data == "clan_upgrade_ask")
@@ -218,7 +409,8 @@ async def clan_upgrade_ask(callback: CallbackQuery):
     
     text = (
         f"🔼 **Улучшение клана до {cur_lvl + 1} уровня**\n\n"
-        f"Новый уровень увеличит максимальное количество участников на 5!\n\n"
+        f"Новый уровень увеличит максимальное количество участников на 5!\n"
+        f"*(На 5 и 15 уровнях клановый торговец расширяет ассортимент, а на 20 уровне скидка распространяется на всё!)*\n\n"
         f"**Требования:**\n"
         f"• Золото в казне: **{cur_gold} / {req_gold}** 🪙 {gold_mark}\n"
         f"• Кристаллы в казне: **{cur_gems} / {req_gems}** 💎 {gems_mark}\n"
@@ -259,7 +451,6 @@ async def clan_upgrade_do(callback: CallbackQuery):
     
     await callback.answer(f"🎉 Клан достиг {cur_lvl + 1} уровня!", show_alert=True)
     await show_my_clan(callback, None)
-
 
 # --- УПРАВЛЕНИЕ СОСТАВОМ (Повышения / Изгнания) ---
 @router.callback_query(F.data == "clan_manage_list")
@@ -337,7 +528,6 @@ async def clan_kick(callback: CallbackQuery):
     await callback.answer("Игрок изгнан из клана!")
     await clan_manage_list(callback)
 
-
 # --- КАЗНА И СКЛАД (ВКЛАДЫ И СНЯТИЯ) ---
 @router.callback_query(F.data == "clan_vault_view")
 async def show_clan_vault(callback: CallbackQuery, state: FSMContext):
@@ -387,7 +577,6 @@ async def show_clan_vault(callback: CallbackQuery, state: FSMContext):
     buttons.append([InlineKeyboardButton(text="🔙 Назад в меню клана", callback_data="clan_my_info")])
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
 
-# --- ПОЖЕРТВОВАНИЯ (ДЛЯ ВСЕХ) ---
 @router.callback_query(F.data == "clan_donate_gold_ask")
 async def ask_donate_gold(callback: CallbackQuery, state: FSMContext):
     await state.set_state(ClanStates.waiting_for_gold)
@@ -480,8 +669,6 @@ async def clan_donate_item_do(callback: CallbackQuery):
     await callback.answer(f"Внесено на склад: {get_item_name(m_id)}!")
     await clan_donate_item_list(callback)
 
-
-# --- СНЯТИЕ ИЗ КАЗНЫ (ТОЛЬКО ЛИДЕР И ОФИЦЕРЫ) ---
 @router.callback_query(F.data == "clan_withdraw_gold_ask")
 async def ask_withdraw_gold(callback: CallbackQuery, state: FSMContext):
     user = get_user(callback.from_user.id)
@@ -600,7 +787,6 @@ async def clan_take_item_do(callback: CallbackQuery):
     await callback.answer(f"Взято со склада: {get_item_name(m_id)}!")
     await clan_withdraw_item_list(callback)
 
-
 # --- ПОДМЕНЮ ПОИСКА КЛАНОВ ---
 @router.callback_query(F.data == "clan_search_list")
 async def show_clans_list(callback: CallbackQuery):
@@ -615,14 +801,14 @@ async def show_clans_list(callback: CallbackQuery):
     buttons = []
     for c in clans[:10]:
         rank_icon = "🥇" if c['rank'] == 1 else "🥈" if c['rank'] == 2 else "🥉" if c['rank'] == 3 else f"#{c['rank']}"
-        text += (f"{rank_icon} **{c['name']}** (Ур. {c['level']})\n"
+        banner = f"{c['banner']} " if c.get('banner') else ""
+        text += (f"{rank_icon} **{banner}{c['name']}** (Ур. {c['level']})\n"
                  f"   └ 📊 Ср. ур.: **{c['avg_level']}** | Места: **{c['members_count']}/{c['max_members']}** (Свободно: {c['free_slots']})\n\n")
-        buttons.append([InlineKeyboardButton(text=f"{rank_icon} {c['name']} (Свободно: {c['free_slots']})", callback_data=f"clan_view_{c['clan_id']}")])
+        buttons.append([InlineKeyboardButton(text=f"{rank_icon} {banner}{c['name']} (Свободно: {c['free_slots']})", callback_data=f"clan_view_{c['clan_id']}")])
         
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="clan_main")])
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
 
-# --- КАРТОЧКА КЛАНА И ПОДАЧА ЗАЯВКИ ---
 @router.callback_query(F.data.startswith("clan_view_"))
 async def view_clan_card(callback: CallbackQuery):
     clan_id = int(callback.data.replace("clan_view_", ""))
@@ -633,9 +819,10 @@ async def view_clan_card(callback: CallbackQuery):
     if not clan_info: return await callback.answer("Клан не найден!", show_alert=True)
         
     rank_icon = "🥇" if clan_info['rank'] == 1 else "🥈" if clan_info['rank'] == 2 else "🥉" if clan_info['rank'] == 3 else f"#{clan_info['rank']}"
+    banner = f"{clan_info['banner']} " if clan_info.get('banner') else ""
     
     text = (
-        f"🛡️ **Клан: {clan_info['name']}**\n\n"
+        f"🛡️ **Клан: {banner}{clan_info['name']}**\n\n"
         f"Позиция в рейтинге рейдов: **{rank_icon}**\n"
         f"Уровень клана: **{clan_info['level']}**\n"
         f"Средний уровень бойцов: **{clan_info['avg_level']}**\n"
@@ -679,7 +866,6 @@ async def apply_to_clan(callback: CallbackQuery):
         
     await view_clan_card(callback)
 
-# --- УПРАВЛЕНИЕ ЗАЯВКАМИ НА ВСТУПЛЕНИЕ ---
 @router.callback_query(F.data == "clan_requests_view")
 async def view_clan_requests(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
@@ -741,8 +927,6 @@ async def reject_clan_request(callback: CallbackQuery):
     await callback.answer("Заявка отклонена.")
     await view_clan_requests(callback)
 
-
-# --- ВЫХОД ИЗ КЛАНА ---
 @router.callback_query(F.data == "clan_leave_confirm")
 async def clan_leave_confirm(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[

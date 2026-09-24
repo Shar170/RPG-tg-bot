@@ -7,7 +7,6 @@ from config import DB_PATH
 from data.ingredients import INGREDIENTS
 
 def get_connection():
-    # timeout=10.0 заставляет SQLite подождать 10 секунд, если база занята другим запросом
     return sqlite3.connect(DB_PATH, timeout=10.0)
 
 def init_db():
@@ -23,6 +22,14 @@ def init_db():
         try: cursor.execute("ALTER TABLE pvp_matches ADD COLUMN last_action_time REAL DEFAULT 0")
         except sqlite3.OperationalError: pass
         try: cursor.execute("ALTER TABLE clans ADD COLUMN total_raids INTEGER DEFAULT 0")
+        except sqlite3.OperationalError: pass
+        
+        # --- НОВЫЕ ПОЛЯ ДЛЯ АПГРЕЙДА КЛАНА ---
+        try: cursor.execute("ALTER TABLE clans ADD COLUMN banner TEXT DEFAULT ''")
+        except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE clans ADD COLUMN merchant_data TEXT DEFAULT '{}'")
+        except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE clans ADD COLUMN chat_history TEXT DEFAULT '[]'")
         except sqlite3.OperationalError: pass
             
         cursor.execute('''CREATE TABLE IF NOT EXISTS users (
@@ -52,7 +59,8 @@ def init_db():
             key TEXT PRIMARY KEY, value TEXT)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS clans (
             clan_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, leader_id INTEGER, treasury INTEGER DEFAULT 0, level INTEGER DEFAULT 1, 
-            weekly_raids INTEGER DEFAULT 0, total_raids INTEGER DEFAULT 0, join_requests TEXT DEFAULT '[]', clan_vault TEXT DEFAULT '{"gold": 0, "gems": 0, "items": {}}')''')
+            weekly_raids INTEGER DEFAULT 0, total_raids INTEGER DEFAULT 0, join_requests TEXT DEFAULT '[]', clan_vault TEXT DEFAULT '{"gold": 0, "gems": 0, "items": {}}',
+            banner TEXT DEFAULT '', merchant_data TEXT DEFAULT '{}', chat_history TEXT DEFAULT '[]')''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS war_regions (
             region_id INTEGER PRIMARY KEY, name TEXT, desc TEXT, target_clears INTEGER DEFAULT 100000, 
             current_clears INTEGER DEFAULT 0, is_liberated INTEGER DEFAULT 0, boss_id TEXT, mobs TEXT)''')
@@ -426,22 +434,27 @@ def update_user(user_id: int, **kwargs):
 def consume_energy(user_id: int, amount: int = 1) -> bool:
     if amount <= 0: return True
     user = get_user(user_id)
-    if user['energy'] >= amount:
-        update_user(user_id, energy=user['energy'] - amount)
+    current_energy = user.get('energy', 5)
+    if current_energy >= amount:
+        update_user(user_id, energy=current_energy - amount)
         return True
     return False
 
+# --- ОБНОВЛЕННОЕ ПОЛУЧЕНИЕ КЛАНА ---
 def get_clan(clan_id: int):
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT clan_id, name, leader_id, treasury, level, weekly_raids, join_requests, clan_vault, total_raids FROM clans WHERE clan_id = ?", (clan_id,))
+        cursor.execute("SELECT clan_id, name, leader_id, treasury, level, weekly_raids, join_requests, clan_vault, total_raids, banner, merchant_data, chat_history FROM clans WHERE clan_id = ?", (clan_id,))
         row = cursor.fetchone()
         if row: 
             return {
                 "clan_id": row[0], "name": row[1], "leader_id": row[2], 
                 "treasury": row[3], "level": row[4], "weekly_raids": row[5], 
                 "join_requests": json.loads(row[6]), "clan_vault": row[7],
-                "total_raids": row[8]
+                "total_raids": row[8],
+                "banner": row[9] if len(row) > 9 and row[9] else "",
+                "merchant_data": json.loads(row[10]) if len(row) > 10 and row[10] else {},
+                "chat_history": json.loads(row[11]) if len(row) > 11 and row[11] else []
             }
     return None
 
@@ -455,9 +468,36 @@ def update_clan(clan_id: int, **kwargs):
     with get_connection() as conn:
         cursor = conn.cursor()
         for key, value in kwargs.items():
-            if key in ['join_requests']: value = json.dumps(value, ensure_ascii=False)
+            if key in ['join_requests', 'merchant_data', 'chat_history']: value = json.dumps(value, ensure_ascii=False)
             cursor.execute(f"UPDATE clans SET {key} = ? WHERE clan_id = ?", (value, clan_id))
         conn.commit()
+
+# --- КЛАНОВЫЙ ТОРГОВЕЦ (ГЕНЕРАЦИЯ СКИДОК) ---
+def get_clan_merchant_deals(clan_id: int) -> dict:
+    clan = get_clan(clan_id)
+    if not clan: return {"buy": [], "sell": []}
+    
+    today = datetime.datetime.today().strftime('%Y-%m-%d')
+    m_data = clan.get('merchant_data', {})
+    
+    # Если данные свежие, возвращаем их
+    if m_data.get('date') == today:
+        return m_data
+        
+    lvl = clan['level']
+    count = 2 if lvl >= 15 else 1 if lvl >= 5 else 0
+    
+    with get_connection() as conn:
+        items = [r[0] for r in conn.cursor().execute("SELECT item_id FROM items").fetchall()]
+        mats = [r[0] for r in conn.cursor().execute("SELECT item_id FROM alchemy_ingredients").fetchall()]
+        pool = items + mats
+        
+        buy_pool = random.sample(pool, min(count, len(pool))) if count > 0 else []
+        sell_pool = random.sample(pool, min(count, len(pool))) if count > 0 else []
+        
+    new_data = {"date": today, "buy": buy_pool, "sell": sell_pool}
+    update_clan(clan_id, merchant_data=new_data)
+    return new_data
 
 def get_clan_members(clan_id: int):
     with get_connection() as conn:
@@ -469,23 +509,24 @@ def get_top_clans(limit=3):
     check_and_distribute_weekly_clan_rewards()
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT name, weekly_raids FROM clans ORDER BY weekly_raids DESC LIMIT ?", (limit,))
-        return [{"name": row[0], "weekly_raids": row[1]} for row in cursor.fetchall()]
+        cursor.execute("SELECT name, weekly_raids, banner FROM clans ORDER BY weekly_raids DESC LIMIT ?", (limit,))
+        return [{"name": row[0], "weekly_raids": row[1], "banner": row[2] if len(row) > 2 else ""} for row in cursor.fetchall()]
 
 def get_all_clans_ranked():
     check_and_distribute_weekly_clan_rewards()
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT clan_id, name, level, weekly_raids, join_requests FROM clans ORDER BY weekly_raids DESC, clan_id ASC")
+        cursor.execute("SELECT clan_id, name, level, weekly_raids, join_requests, banner FROM clans ORDER BY weekly_raids DESC, clan_id ASC")
         rows = cursor.fetchall()
         result = []
         for rank, row in enumerate(rows, start=1):
-            clan_id, name, level, _, join_reqs_raw = row
+            clan_id, name, level, _, join_reqs_raw, banner = row
             max_members = 5 + level * 5
             cursor.execute("SELECT COUNT(*), AVG(level) FROM users WHERE clan_id = ?", (clan_id,))
             count, avg_lvl = cursor.fetchone()
             result.append({
                 "clan_id": clan_id, "rank": rank, "name": name, "level": level,
+                "banner": banner if banner else "",
                 "avg_level": round(avg_lvl or 1.0, 1), "members_count": count or 0,
                 "max_members": max_members, "free_slots": max(0, max_members - (count or 0)),
                 "join_requests": json.loads(join_reqs_raw) if join_reqs_raw else []
