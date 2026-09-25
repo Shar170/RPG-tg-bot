@@ -4,13 +4,6 @@ import uuid
 def generate_emoji_puzzle(puzzle_category: str = None):
     """
     Генерирует процедурную головоломку.
-    Категории:
-    - math_classic: символьные уравнения с эмодзи
-    - math_weight: алхимические весы (пропорции)
-    - sequence: арифметические / геометрические / фибоначчи ряды
-    - magic_square: магический квадрат 3х3 с пропущенным числом
-    - matrix_rule: руническая матрица 3х3 с математическим законом строк
-    - clock_angle: вычисление наименьшего угла между часовыми стрелками
     """
     all_categories = ["math_classic", "math_weight", "sequence", "magic_square", "matrix_rule", "clock_angle"]
     puzzle_type = puzzle_category if puzzle_category in all_categories else random.choice(all_categories)
@@ -125,14 +118,13 @@ def generate_emoji_puzzle(puzzle_category: str = None):
             f"{grid_text}"
         )
 
-    else:  # clock_angle
+    else:  
         h = random.randint(1, 12)
         m = random.choice([0, 10, 15, 20, 30, 40, 45, 50])
         raw_angle = abs(30 * h - 5.5 * m) % 360
         if raw_angle > 180:
             raw_angle = 360 - raw_angle
         
-        # Для часов формируем строковый ответ с градусами
         ans_str = f"{int(raw_angle)}°" if raw_angle.is_integer() else f"{raw_angle}°"
         wrongs = set()
         shifts = [-25, -15, -10, 10, 15, 20, 25, 30]
@@ -152,7 +144,6 @@ def generate_emoji_puzzle(puzzle_category: str = None):
             "correct": ans_str
         }
 
-    # Генерация ложных вариантов для числовых загадок
     options = {correct}
     while len(options) < 4:
         noise = random.randint(-6, 6)
@@ -171,15 +162,18 @@ def generate_emoji_puzzle(puzzle_category: str = None):
         "correct": str(correct)
     }
 
-def generate_dungeon_graph(dungeon_type="solo", mobs_pool=None, boss_id=None):
+def generate_dungeon_graph(dungeon_type="solo", mobs_pool=None, boss_id=None, min_rooms=3, max_rooms=3, room_weights=None):
     """
     Генерирует направленный граф подземелья (слои комнат).
-    Принимает опциональный mobs_pool и boss_id для ивентов и Войны за Камарию.
+    Принимает опциональный mobs_pool, boss_id и рамки количества комнат для гибкой настройки.
+    Веса комнат передаются в виде словаря: {"combat": 40, "puzzle": 30, "treasure": 20, "empty": 10}
     """
     if mobs_pool is None:
         mobs_pool = ["temple_guard", "living_idol", "khmer_priest", "poison_slime"]
     if boss_id is None:
         boss_id = "temple_guard" if dungeon_type == "solo" else "bone_dragon"
+    if room_weights is None:
+        room_weights = {"combat": 40, "puzzle": 20, "treasure": 20, "empty": 20}
 
     def get_id():
         return str(uuid.uuid4())[:6]
@@ -187,40 +181,44 @@ def generate_dungeon_graph(dungeon_type="solo", mobs_pool=None, boss_id=None):
     start_id = get_id()
     nodes = {start_id: {"type": "empty", "next": []}}
     current_layer = [start_id]
+    
+    total_layers = random.randint(min_rooms, max_rooms)
 
-    # 3 слоя случайных комнат перед костром/привалом
-    for i in range(3):
+    types_list = list(room_weights.keys())
+    weights_list = list(room_weights.values())
+
+    for i in range(total_layers):
         next_layer = []
         num_rooms = random.choice([1, 2])
         for _ in range(num_rooms):
             r_id = get_id()
-            types = ["combat", "combat", "puzzle", "treasure", "empty"]
-            # Сразу после входа всегда битва или загадка
-            r_type = random.choice(["combat", "puzzle"]) if i == 0 else random.choice(types)
+            
+            # В первой комнате заставляем дать либо бой, либо загадку (чтобы не было скучно)
+            if i == 0:
+                first_weights = [room_weights.get("combat", 50), room_weights.get("puzzle", 50)]
+                r_type = random.choices(["combat", "puzzle"], weights=first_weights, k=1)[0]
+            else:
+                r_type = random.choices(types_list, weights=weights_list, k=1)[0]
             
             node_data = {"type": r_type, "next": []}
             if r_type == "combat":
                 node_data["mob_id"] = random.choice(mobs_pool)
             elif r_type == "puzzle":
-                # Для войны за Камарию выше шанс на новые математические загадки
                 p_cat = random.choice(["matrix_rule", "clock_angle"]) if dungeon_type == "war" else None
                 node_data["puzzle"] = generate_emoji_puzzle(p_cat)
 
             nodes[r_id] = node_data
             next_layer.append(r_id)
 
-        # Связываем предыдущий слой с новым
         for c_id in current_layer:
             nodes[c_id]["next"] = next_layer.copy()
         current_layer = next_layer
 
-    # Привал (костёр) перед боссом
     camp_id = get_id()
     nodes[camp_id] = {"type": "campfire", "next": []}
     for c_id in current_layer:
         nodes[c_id]["next"] = [camp_id]
 
-    # Финальный Босс
     b_id = get_id()
     nodes[b_id] = {"type": "boss", "mob_id": boss_id, "next": []}
     nodes[camp_id]["next"] = [b_id]

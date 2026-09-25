@@ -2,7 +2,7 @@ import time
 import random
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from database import get_user, update_user, consume_energy, get_energy_settings
+from database import get_user, update_user, consume_energy, get_energy_settings, track_stat
 
 router = Router()
 
@@ -196,6 +196,7 @@ async def dice_play(callback: CallbackQuery):
     if p_roll > b_roll:
         user['gold'] += 100
         msg = f"🎉 **Вы выиграли!** (+50 чистыми)"
+        track_stat(user['user_id'], 'minigames_won', 1)
     elif p_roll == b_roll:
         user['gold'] += 50
         msg = f"🤝 **Ничья.** (Ставка возвращена)"
@@ -312,6 +313,7 @@ async def lock_input(callback: CallbackQuery):
             inv = user.get('inventory', {})
             inv.setdefault("materials", {})["epic_token"] = inv.get("materials", {}).get("epic_token", 0) + 1
             update_user(user['user_id'], gold=user['gold'], gems=user['gems'], inventory=inv)
+            track_stat(user['user_id'], 'minigames_won', 1)
             text = f"🎉 **СУНДУК ОТКРЫТ!**\nКод был `{secret}`.\n\nВы нашли:\n💰 300 Золота\n💎 3 Алмаза\n🎫 Эпический жетон!"
             await callback.answer()
             return await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -450,6 +452,7 @@ async def fish_catch(callback: CallbackQuery):
         user['gems'] = user.get('gems', 0) + 1
         msg = "Вы вытащили со дна **Затопленный сундук**!"
         reward = "\n💰 +150 Золота\n💎 +1 Алмаз"
+        track_stat(user['user_id'], 'minigames_won', 1)
         
     update_user(user['user_id'], gold=user.get('gold', 0), gems=user.get('gems', 0), inventory=user.get('inventory', {}), home_data=home)
     await callback.answer("Улов пойман!", show_alert=False)
@@ -459,4 +462,3 @@ async def fish_catch(callback: CallbackQuery):
         [InlineKeyboardButton(text="🔙 В таверну", callback_data="town_tavern")]
     ])
     await callback.message.edit_text(f"🎣 **Результат рыбалки (Натяжение: {tension}%)**\n\n{msg}{reward}", reply_markup=kb, parse_mode="Markdown")
-

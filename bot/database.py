@@ -24,7 +24,6 @@ def init_db():
         try: cursor.execute("ALTER TABLE clans ADD COLUMN total_raids INTEGER DEFAULT 0")
         except sqlite3.OperationalError: pass
         
-        # --- НОВЫЕ ПОЛЯ ДЛЯ АПГРЕЙДА КЛАНА ---
         try: cursor.execute("ALTER TABLE clans ADD COLUMN banner TEXT DEFAULT ''")
         except sqlite3.OperationalError: pass
         try: cursor.execute("ALTER TABLE clans ADD COLUMN merchant_data TEXT DEFAULT '{}'")
@@ -44,6 +43,30 @@ def init_db():
             
         cursor.execute('''CREATE TABLE IF NOT EXISTS daily_dungeons (
             day_index INTEGER PRIMARY KEY, name TEXT, desc TEXT, mobs TEXT, loot_id TEXT, loot_name TEXT, boss_id TEXT, mob_modifier REAL)''')
+            
+        try: cursor.execute("ALTER TABLE daily_dungeons ADD COLUMN min_rooms INTEGER DEFAULT 3")
+        except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE daily_dungeons ADD COLUMN max_rooms INTEGER DEFAULT 4")
+        except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE daily_dungeons ADD COLUMN room_weights TEXT DEFAULT '{\"combat\": 50, \"puzzle\": 20, \"treasure\": 15, \"empty\": 15}'")
+        except sqlite3.OperationalError: pass
+        
+        cursor.execute('''CREATE TABLE IF NOT EXISTS war_regions (
+            region_id INTEGER PRIMARY KEY, name TEXT, desc TEXT, target_clears INTEGER DEFAULT 100000, 
+            current_clears INTEGER DEFAULT 0, is_liberated INTEGER DEFAULT 0, boss_id TEXT, mobs TEXT)''')
+            
+        try: cursor.execute("ALTER TABLE war_regions ADD COLUMN min_rooms INTEGER DEFAULT 4")
+        except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE war_regions ADD COLUMN max_rooms INTEGER DEFAULT 6")
+        except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE war_regions ADD COLUMN room_weights TEXT DEFAULT '{\"combat\": 60, \"puzzle\": 15, \"treasure\": 15, \"empty\": 10}'")
+        except sqlite3.OperationalError: pass
+
+        cursor.execute('''CREATE TABLE IF NOT EXISTS solo_dungeons (
+            id TEXT PRIMARY KEY, name TEXT, desc TEXT, mobs TEXT, boss_id TEXT, 
+            min_rooms INTEGER DEFAULT 3, max_rooms INTEGER DEFAULT 5, 
+            room_weights TEXT DEFAULT '{"combat": 40, "puzzle": 30, "treasure": 20, "empty": 10}')''')
+
         cursor.execute('''CREATE TABLE IF NOT EXISTS bestiary (
             mob_id TEXT PRIMARY KEY, name TEXT, hp_min INTEGER, hp_max INTEGER, dmg_min INTEGER, dmg_max INTEGER, 
             row_pref TEXT, skills TEXT, gold_min INTEGER DEFAULT 5, gold_max INTEGER DEFAULT 15, xp_reward INTEGER DEFAULT 10)''')
@@ -61,9 +84,6 @@ def init_db():
             clan_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, leader_id INTEGER, treasury INTEGER DEFAULT 0, level INTEGER DEFAULT 1, 
             weekly_raids INTEGER DEFAULT 0, total_raids INTEGER DEFAULT 0, join_requests TEXT DEFAULT '[]', clan_vault TEXT DEFAULT '{"gold": 0, "gems": 0, "items": {}}',
             banner TEXT DEFAULT '', merchant_data TEXT DEFAULT '{}', chat_history TEXT DEFAULT '[]')''')
-        cursor.execute('''CREATE TABLE IF NOT EXISTS war_regions (
-            region_id INTEGER PRIMARY KEY, name TEXT, desc TEXT, target_clears INTEGER DEFAULT 100000, 
-            current_clears INTEGER DEFAULT 0, is_liberated INTEGER DEFAULT 0, boss_id TEXT, mobs TEXT)''')
             
         cursor.execute('''CREATE TABLE IF NOT EXISTS arena_queue (
             user_id INTEGER PRIMARY KEY, level INTEGER, clan_id INTEGER, joined_at REAL)''')
@@ -72,7 +92,6 @@ def init_db():
             p1_hp INTEGER, p2_hp INTEGER, p1_max INTEGER, p2_max INTEGER, 
             p1_ap INTEGER, p2_ap INTEGER, turn INTEGER, log TEXT, match_state TEXT DEFAULT '{}', last_action_time REAL DEFAULT 0)''')
             
-        # --- ТАБЛИЦА СКИНОВ ДОМА ---
         cursor.execute('''CREATE TABLE IF NOT EXISTS home_skins (
             skin_id TEXT PRIMARY KEY, name TEXT, type TEXT, price INTEGER DEFAULT 0, requirements TEXT DEFAULT '{}', desc TEXT DEFAULT '')''')
             
@@ -176,19 +195,28 @@ def seed_all():
             ("max_damage_reduction", "0.75"),
             ("clan_create_min_level", "50"),
             ("clan_create_cost_gems", "100"),
-            ("clan_create_cost_gold", "0")
+            ("clan_create_cost_gold", "0"),
+            ("dungeon_trap_chance", "0.2"),
+            ("dungeon_mimic_chance", "0.15")
         ]
         cursor.executemany("INSERT OR REPLACE INTO game_settings VALUES (?, ?)", settings)
         
         skins = [
-            ("base", "Базовый шатер", "free", 0, "{}", ""),
-            ("cozy_wood", "Уютная лесная хижина", "gold", 5000, "{}", ""),
-            ("painted_diorama", "Расписная диорама (Low-poly)", "gems", 100, "{}", "Уютный фэнтези-стиль с теплыми земляными тонами"),
-            ("khmer_ruins", "Руины кхмерского храма", "achievement", 0, json.dumps({"req_bosses": 20}), "Убить 20 боссов"),
-            ("aztec_ziggurat", "Ацтекский алтарь", "achievement", 0, json.dumps({"req_title": "Герой Камарии"}), "Титул 'Герой Камарии'"),
-            ("clan_fort", "Цитадель Братства", "achievement", 0, json.dumps({"req_clan_lvl": 20}), "Клан 20+ уровня")
+            ("base", "Базовый шатер", "free", 0, "{}", "Треск костра и запах дыма стелется по округе. Палатка и небольшая телега ютятся в лесу у подножья многолетнего дуба."),
+            ("cozy_wood", "Уютная лесная хижина", "gold", 5000, "{}", "Запах свежеспиленного дерева и тепло из кирпичной печи наполняют эту добротную хижину умиротворением."),
+            ("painted_diorama", "Расписная диорама", "gems", 100, "{}", "Волшебное место с теплыми земляными тонами, словно сошедшее со страниц сказочной книги."),
+            ("khmer_ruins", "Руины кхмерского храма", "achievement", 0, json.dumps({"req_bosses": 20}), "Древние камни, оплетенные корнями огромного баньяна, хранят мистическое свечение и покой."),
+            ("aztec_ziggurat", "Ацтекский алтарь", "achievement", 0, json.dumps({"req_title": "Герой Камарии"}), "Замшелый камень с золотыми прожилками и отголоски древних барабанов сопровождают это величественное место."),
+            ("clan_fort", "Цитадель Братства", "achievement", 0, json.dumps({"req_clan_lvl": 20}), "Строгий каменный форт, украшенный клановыми стягами. Здесь пахнет сталью и победами.")
         ]
         cursor.executemany("INSERT OR REPLACE INTO home_skins VALUES (?, ?, ?, ?, ?, ?)", skins)
+
+        solo_dungeons_seed = [
+            ("forest", "🌲 Загадочный Лес", "Обычный лес с гоблинами и слизнями. (Отлично для новичков)", json.dumps(["poison_slime", "goblin_thief", "decay_treant"]), "decay_treant", 3, 5, json.dumps({"combat": 40, "puzzle": 30, "treasure": 20, "empty": 10})),
+            ("crypt", "💀 Забытый Склеп", "Мрачные катакомбы, полные нежити и древних загадок.", json.dumps(["skeleton_crossbow", "living_dead", "fallen_champion"]), "bone_dragon", 4, 6, json.dumps({"combat": 60, "puzzle": 10, "treasure": 20, "empty": 10})),
+            ("temple", "🏛️ Руины Храма", "Древние развалины с опасными ловушками и стражами.", json.dumps(["temple_guard", "living_idol", "khmer_priest"]), "golem_blacksmith", 5, 8, json.dumps({"combat": 50, "puzzle": 25, "treasure": 15, "empty": 10}))
+        ]
+        cursor.executemany("INSERT OR IGNORE INTO solo_dungeons VALUES (?, ?, ?, ?, ?, ?, ?, ?)", solo_dungeons_seed)
 
         war_regions_seed = [
             (1, "🔥 Долина Пепла", "Выжженная земля под властью огненных демонов.", 100000, 0, 0, "fire_lord", json.dumps(["magma_slime", "cultist_fanatic"])),
@@ -199,7 +227,9 @@ def seed_all():
             (6, "⚡ Цитадель Бурь", "Высокогорный бастион с грозовыми големами.", 100000, 0, 0, "golem_blacksmith", json.dumps(["temple_guard", "magic_anomaly"])),
             (7, "👑 Бастион Королей", "Сердце Камарии, захваченное Костяным Драконом.", 100000, 0, 0, "bone_dragon", json.dumps(["fallen_champion", "skeleton_crossbow"]))
         ]
-        cursor.executemany("INSERT OR IGNORE INTO war_regions VALUES (?, ?, ?, ?, ?, ?, ?, ?)", war_regions_seed)
+        for w in war_regions_seed:
+            try: cursor.execute("INSERT OR IGNORE INTO war_regions (region_id, name, desc, target_clears, current_clears, is_liberated, boss_id, mobs) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", w)
+            except: pass
 
         mobs = [
             ("temple_guard", "Храмовый Страж", 55, 75, 12, 18, "front", json.dumps({"counter": 0.25, "weak": ["shock"]}), 6, 14, 12),
@@ -237,7 +267,10 @@ def seed_all():
             (5, "🏜 Золотой Мираж", "Пески скрывают иллюзорные богатства.", json.dumps(["goblin_thief", "golden_mimic"]), "gold_petal", "Золотой лепесток", "greed_spirit", 1.15),
             (6, "⚔️ Кровавый Колизей", "Арена для сильнейших воинов.", json.dumps(["fallen_champion", "arena_berserk"]), "epic_token", "Эпический жетон", "arena_champ", 1.35)
         ]
-        cursor.executemany("INSERT OR REPLACE INTO daily_dungeons VALUES (?, ?, ?, ?, ?, ?, ?, ?)", daily_dungeons)
+        for d in daily_dungeons:
+            try: cursor.execute("INSERT OR IGNORE INTO daily_dungeons (day_index, name, desc, mobs, loot_id, loot_name, boss_id, mob_modifier) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", d)
+            except: pass
+            
         cursor.executemany("INSERT OR REPLACE INTO alchemy_ingredients VALUES (?, ?, ?, ?)", INGREDIENTS)
 
         items = [
@@ -289,15 +322,69 @@ def get_all_home_skins() -> dict:
         skins = {}
         for row in rows:
             reqs = json.loads(row[4]) if row[4] else {}
-            skin_data = {
-                "name": row[1],
-                "type": row[2],
-                "price": row[3],
-                "desc": row[5]
-            }
+            skin_data = {"name": row[1], "type": row[2], "price": row[3], "desc": row[5]}
             skin_data.update(reqs) 
             skins[row[0]] = skin_data
         return skins
+
+def get_all_solo_dungeons():
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM solo_dungeons")
+        rows = cursor.fetchall()
+        res = []
+        for r in rows:
+            cols = [desc[0] for desc in cursor.description]
+            d = dict(zip(cols, r))
+            d["mobs"] = json.loads(d["mobs"]) if d["mobs"] else []
+            d["room_weights"] = json.loads(d["room_weights"]) if d.get("room_weights") else None
+            res.append(d)
+        return res
+
+def get_solo_dungeon(d_id: str):
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM solo_dungeons WHERE id = ?", (d_id,))
+        row = cursor.fetchone()
+        if row:
+            cols = [desc[0] for desc in cursor.description]
+            d = dict(zip(cols, row))
+            d["mobs"] = json.loads(d["mobs"]) if d["mobs"] else []
+            d["room_weights"] = json.loads(d["room_weights"]) if d.get("room_weights") else None
+            return d
+    return None
+
+def get_today_dungeon():
+    day_index = datetime.datetime.today().weekday()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM daily_dungeons WHERE day_index = ?", (day_index,))
+        row = cursor.fetchone()
+        if row: 
+            cols = [desc[0] for desc in cursor.description]
+            d = dict(zip(cols, row))
+            d["mobs"] = json.loads(d["mobs"]) if d["mobs"] else []
+            d["room_weights"] = json.loads(d["room_weights"]) if d.get("room_weights") else None
+            return d
+    return None
+
+def get_all_war_regions():
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM war_regions ORDER BY region_id ASC")
+        rows = cursor.fetchall()
+        res = []
+        for r in rows:
+            cols = [desc[0] for desc in cursor.description]
+            d = dict(zip(cols, r))
+            d["mobs"] = json.loads(d["mobs"]) if d["mobs"] else []
+            d["room_weights"] = json.loads(d["room_weights"]) if d.get("room_weights") else None
+            d["pct"] = round(min(100.0, (d["current_clears"] / d["target_clears"]) * 100), 2)
+            d["id"] = d["region_id"]
+            d["target"] = d["target_clears"]
+            d["current"] = d["current_clears"]
+            res.append(d)
+        return res
 
 def check_and_distribute_weekly_clan_rewards():
     today = datetime.date.today()
@@ -388,20 +475,20 @@ def get_unlocked_titles(home_data: dict) -> list[str]:
     if m_k >= 200: titles.append("Мясник Камарии")
     if b_k >= 5: titles.append("Охотник на Боссов")
     if stats.get('pvp_wins', 0) >= 10: titles.append("Гладиатор")
+    if stats.get('pvp_wins', 0) >= 50: titles.append("Чемпион Арены")
     if stats.get('war_clears', 0) >= 20: titles.append("Герой Камарии")
+    
+    if stats.get('riddles_solved', 0) >= 10: titles.append("Мыслитель")
+    if stats.get('riddles_failed', 0) >= 10: titles.append("Пустоголовый")
+    if stats.get('kills_fire_lord', 0) >= 1: titles.append("Пожарный")
+    if stats.get('kills_goblin_thief', 0) >= 10: titles.append("Гроза гоблинов")
+    if stats.get('kills_living_idol', 0) >= 10: titles.append("Разрушитель идолов")
+    if stats.get('kills_time_keeper', 0) >= 1: titles.append("Похоронитель хранителей")
+    if stats.get('potions_crafted', 0) >= 20: titles.append("Мастер зелий")
+    if stats.get('items_crafted', 0) >= 10: titles.append("Кузнец")
+    if stats.get('minigames_won', 0) >= 5: titles.append("Счастливчик")
 
     return sorted(list(set(titles)))
-
-def get_all_war_regions():
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT region_id, name, desc, target_clears, current_clears, is_liberated, boss_id, mobs FROM war_regions ORDER BY region_id ASC")
-        rows = cursor.fetchall()
-        return [{
-            "id": r[0], "name": r[1], "desc": r[2], "target": r[3], "current": r[4],
-            "is_liberated": bool(r[5]), "boss_id": r[6], "mobs": json.loads(r[7]),
-            "pct": round(min(100.0, (r[4] / r[3]) * 100), 2)
-        } for r in rows]
 
 def progress_war_region(region_id: int, user_id: int, home_data: dict = None) -> tuple[dict, int]:
     user = get_user(user_id)
@@ -411,6 +498,10 @@ def progress_war_region(region_id: int, user_id: int, home_data: dict = None) ->
     stats = home_data.setdefault('stats', {})
     stats['war_clears'] = stats.get('war_clears', 0) + 1
     
+    reg_clears_key = f'war_clears_reg_{region_id}'
+    stats[reg_clears_key] = stats.get(reg_clears_key, 0) + 1
+    reg_clears = stats[reg_clears_key]
+    
     gems_gained = 0
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -418,8 +509,16 @@ def progress_war_region(region_id: int, user_id: int, home_data: dict = None) ->
         row = cursor.fetchone()
         if row:
             r_name, target, current, is_lib = row
-            p_medal = f"🎖️ Защитник: {r_name}"
-            if p_medal not in medals: medals.append(p_medal)
+            
+            if reg_clears == 10:
+                m_title = f"🥉 Защитник: {r_name}"
+                if m_title not in medals: medals.append(m_title)
+            elif reg_clears == 50:
+                m_title = f"🥈 Ветеран: {r_name}"
+                if m_title not in medals: medals.append(m_title)
+            elif reg_clears == 100:
+                m_title = f"🥇 Герой: {r_name}"
+                if m_title not in medals: medals.append(m_title)
 
             new_current = current + 1
             new_lib = 1 if new_current >= target else is_lib
@@ -452,13 +551,11 @@ def get_user(user_id: int):
                 else: 
                     u_dict[json_field] = {}
                     
-            # --- ЛОГИКА РЕГЕНЕРАЦИИ ЭНЕРГИИ ---
             now = int(time.time())
             last_time = u_dict.get('last_energy_time', 0)
             current_energy = u_dict.get('energy', 5)
             lvl = u_dict.get('level', 1)
             
-            # Быстро получаем настройки без открытия новых коннектов
             cursor.execute("SELECT key, value FROM game_settings WHERE key IN ('max_energy', 'energy_regen_seconds')")
             s_dict = {row[0]: row[1] for row in cursor.fetchall()}
             
@@ -475,9 +572,7 @@ def get_user(user_id: int):
                     time_passed = now - last_time
                     if time_passed >= regen_seconds:
                         cycles = time_passed // regen_seconds
-                        # Начисляем не больше капа
                         new_energy = min(max_energy, current_energy + cycles)
-                        # Смещаем время на ровное кол-во циклов, чтобы не терять "секунды в остатке"
                         new_last_time = last_time + (cycles * regen_seconds)
                         
                         cursor.execute("UPDATE users SET energy = ?, last_energy_time = ? WHERE user_id = ?", (new_energy, new_last_time, user_id))
@@ -499,15 +594,13 @@ def update_user(user_id: int, **kwargs):
 
 def consume_energy(user_id: int, amount: int = 1) -> bool:
     if amount <= 0: return True
-    user = get_user(user_id) # get_user автоматически обработает реген до траты
+    user = get_user(user_id) 
     current_energy = user.get('energy', 5)
     
     if current_energy >= amount:
         max_e = get_player_max_energy(user.get('level', 1))
         new_energy = current_energy - amount
         
-        # Если до траты энергия была на уровне капа (или перекап от админа),
-        # то при падении ниже капа таймер должен начать тикать ровно с этого момента.
         if current_energy >= max_e and new_energy < max_e:
             update_user(user_id, energy=new_energy, last_energy_time=int(time.time()))
         else:
@@ -637,13 +730,6 @@ def get_setting(key: str, default: str) -> str:
         res = conn.cursor().execute("SELECT value FROM game_settings WHERE key = ?", (key,)).fetchone()
         return res[0] if res else default
 
-def get_today_dungeon():
-    day_index = datetime.datetime.today().weekday()
-    with get_connection() as conn:
-        row = conn.cursor().execute("SELECT * FROM daily_dungeons WHERE day_index = ?", (day_index,)).fetchone()
-        if row: return {"name": row[1], "desc": row[2], "mobs": json.loads(row[3]), "loot": row[4], "loot_name": row[5], "boss_id": row[6], "mob_modifier": row[7]}
-    return None
-
 def get_mob_by_name(name: str):
     with get_connection() as conn:
         row = conn.cursor().execute("SELECT * FROM bestiary WHERE mob_id = ? OR name = ?", (name, name)).fetchone()
@@ -736,4 +822,3 @@ def remove_from_queue(user_id: int):
     with get_connection() as conn:
         conn.cursor().execute("DELETE FROM arena_queue WHERE user_id = ?", (user_id,))
         conn.commit()
-

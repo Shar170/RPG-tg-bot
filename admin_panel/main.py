@@ -47,9 +47,30 @@ def get_conn():
     except: pass
     try: conn.execute("CREATE TABLE IF NOT EXISTS game_settings (key TEXT PRIMARY KEY, value TEXT)")
     except: pass
-    # Создание таблицы скинов, если её нет
     try: conn.execute("CREATE TABLE IF NOT EXISTS home_skins (skin_id TEXT PRIMARY KEY, name TEXT, type TEXT, price INTEGER DEFAULT 0, requirements TEXT DEFAULT '{}', desc TEXT DEFAULT '')")
     except: pass
+    
+    # Новые колонки для подземелий
+    try: conn.execute("ALTER TABLE daily_dungeons ADD COLUMN min_rooms INTEGER DEFAULT 3")
+    except sqlite3.OperationalError: pass
+    try: conn.execute("ALTER TABLE daily_dungeons ADD COLUMN max_rooms INTEGER DEFAULT 4")
+    except sqlite3.OperationalError: pass
+    try: conn.execute("ALTER TABLE daily_dungeons ADD COLUMN room_weights TEXT DEFAULT '{\"combat\": 50, \"puzzle\": 20, \"treasure\": 15, \"empty\": 15}'")
+    except sqlite3.OperationalError: pass
+    
+    try: conn.execute("ALTER TABLE war_regions ADD COLUMN min_rooms INTEGER DEFAULT 4")
+    except sqlite3.OperationalError: pass
+    try: conn.execute("ALTER TABLE war_regions ADD COLUMN max_rooms INTEGER DEFAULT 6")
+    except sqlite3.OperationalError: pass
+    try: conn.execute("ALTER TABLE war_regions ADD COLUMN room_weights TEXT DEFAULT '{\"combat\": 60, \"puzzle\": 15, \"treasure\": 15, \"empty\": 10}'")
+    except sqlite3.OperationalError: pass
+
+    # Новая таблица соло-данжей
+    conn.execute('''CREATE TABLE IF NOT EXISTS solo_dungeons (
+        id TEXT PRIMARY KEY, name TEXT, desc TEXT, mobs TEXT, boss_id TEXT, 
+        min_rooms INTEGER DEFAULT 3, max_rooms INTEGER DEFAULT 5, 
+        room_weights TEXT DEFAULT '{"combat": 40, "puzzle": 30, "treasure": 20, "empty": 10}')''')
+
     conn.commit()
     return conn
 
@@ -478,7 +499,18 @@ with tab5:
 
 # --- ВКЛАДКА 6: ТАБЛИЦЫ БД ---
 with tab6:
-    pks = {"game_settings": "key", "loot_tables": "id", "items": "item_id", "daily_dungeons": "day_index", "recipes": "recipe_id", "clans": "clan_id", "alchemy_ingredients": "item_id", "home_skins": "skin_id"}
+    pks = {
+        "game_settings": "key", 
+        "loot_tables": "id", 
+        "items": "item_id", 
+        "daily_dungeons": "day_index", 
+        "solo_dungeons": "id",
+        "recipes": "recipe_id", 
+        "clans": "clan_id", 
+        "alchemy_ingredients": "item_id", 
+        "home_skins": "skin_id",
+        "war_regions": "region_id"
+    }
     table_to_edit = st.selectbox("Таблица:", list(pks.keys()))
     df = fetch_table(table_to_edit)
     edited = st.data_editor(df, num_rows="dynamic", use_container_width=True, key=f"tbl_{table_to_edit}")

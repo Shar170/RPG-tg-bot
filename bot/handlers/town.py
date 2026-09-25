@@ -104,32 +104,44 @@ async def cb_town_back(callback: CallbackQuery):
 async def cb_town_home(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     home_data = user.get('home_data', {})
-    medals = home_data.get('medals', [])
     stats = home_data.get('stats', {})
-    titles = get_unlocked_titles(home_data)
     
+    skins = get_all_home_skins()
+    skin_id = home_data.get("skin", "base")
+    skin_info = skins.get(skin_id, {})
+    skin_name = skin_info.get("name", "Базовый шатер")
+    
+    skin_desc = skin_info.get("desc", "")
+    if not skin_desc or skin_desc.startswith("Убить") or skin_desc.startswith("Титул"):
+        skin_desc = "Ветер колышет полог, а в котелке булькает сытная похлебка."
+        
+    active_title = home_data.get('active_title', 'Новичок')
+    active_medal = home_data.get('active_medal', 'Нет медалей')
+
     quests = check_and_generate_quests(user['user_id'])
     q_text = ""
     for q in quests.get("quests", []):
         status = "✅" if q["completed"] else f"{q['progress']}/{q['target']}"
         q_text += f"• {q['desc']} [{status}]\n"
         
-    medals_str = "\n".join(medals) if medals else "Пусто"
-    
-    skins = get_all_home_skins()
-    skin_id = home_data.get("skin", "base")
-    skin_name = skins.get(skin_id, {}).get("name", "Базовый шатер")
-    
+    clan_id = user.get('clan_id', 0)
+    clan_tag = ""
+    if clan_id != 0:
+        clan = get_clan(clan_id)
+        if clan and clan.get('banner'):
+            clan_tag = f"[{clan['banner']}] "
+            
     text = (
-        f"🏡 **Ваш Дом** *(Оформление: {skin_name})*\n\n"
-        f"📜 **Открытые Титулы:**\n{', '.join(titles)}\n\n"
-        f"🎖 **Стенд Славы:**\n{medals_str}\n\n"
+        f"🏡 **Ваш Дом** *(Оформление: {skin_name})*\n"
+        f"_{skin_desc}_\n\n"
+        f"Титул {clan_tag}{user['username']}: **{active_title}**\n"
+        f"Известный как обладатель медали: **{active_medal}**\n\n"
         f"📅 **Задания на сегодня:**\n{q_text}\n"
         f"📊 **Статистика:**\n"
         f"└ Убито монстров: {stats.get('mobs_killed', 0)}\n"
         f"└ Повержено боссов: {stats.get('bosses_killed', 0)}\n"
         f"└ Побед в PvP: {stats.get('pvp_wins', 0)}\n"
-        f"└ Смертей в рейдах: {stats.get('deaths_count', 0)}"
+        f"└ Смертей: {stats.get('deaths_count', 0)}"
     )
     
     all_quests_completed = len(quests.get("quests", [])) > 0 and all(q.get("completed") for q in quests.get("quests", []))
@@ -139,10 +151,77 @@ async def cb_town_home(callback: CallbackQuery):
     if all_quests_completed and not already_claimed:
         buttons.append([InlineKeyboardButton(text="🎁 Забрать награду за дейлики", callback_data="town_claim_daily")])
         
+    buttons.append([
+        InlineKeyboardButton(text="📜 Выбрать титул", callback_data="town_home_titles"),
+        InlineKeyboardButton(text="🎖 Выбрать медаль", callback_data="town_home_medals")
+    ])
     buttons.append([InlineKeyboardButton(text="🎨 Настройки дома (Скины)", callback_data="town_home_settings")])
     buttons.append([InlineKeyboardButton(text="🔙 В лагерь", callback_data="town_back")])
     
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
+
+@router.callback_query(F.data == "town_home_titles")
+async def cb_town_home_titles(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
+    home_data = user.get('home_data', {})
+    titles = get_unlocked_titles(home_data)
+    
+    text = "📜 **Ваши разблокированные титулы:**\nВыберите один для отображения в профиле."
+    buttons = []
+    
+    for t in titles:
+        btn_text = f"✅ {t}" if t == home_data.get('active_title') else t
+        buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"home_set_title:{t}")])
+        
+    buttons.append([InlineKeyboardButton(text="🔙 Назад в Дом", callback_data="town_home")])
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
+
+@router.callback_query(F.data.startswith("home_set_title:"))
+async def cb_home_set_title(callback: CallbackQuery):
+    title = callback.data.split(":")[1]
+    user = get_user(callback.from_user.id)
+    home_data = user.get('home_data', {})
+    
+    if title in get_unlocked_titles(home_data):
+        home_data['active_title'] = title
+        update_user(user['user_id'], home_data=home_data)
+        await callback.answer(f"Титул '{title}' установлен!")
+        
+    await cb_town_home_titles(callback)
+
+@router.callback_query(F.data == "town_home_medals")
+async def cb_town_home_medals(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
+    home_data = user.get('home_data', {})
+    medals = home_data.get('medals', [])
+    
+    text = "🎖 **Ваши боевые медали:**\n"
+    buttons = []
+    
+    if not medals:
+        text += "У вас пока нет медалей. Участвуйте в Войне за Камарию, чтобы получать их!"
+    else:
+        text += "Выберите одну для отображения в профиле."
+        for idx, m in enumerate(medals):
+            btn_text = f"✅ {m}" if m == home_data.get('active_medal') else m
+            buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"home_set_medal:{idx}")])
+            
+    buttons.append([InlineKeyboardButton(text="🔙 Назад в Дом", callback_data="town_home")])
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
+
+@router.callback_query(F.data.startswith("home_set_medal:"))
+async def cb_home_set_medal(callback: CallbackQuery):
+    idx = int(callback.data.split(":")[1])
+    user = get_user(callback.from_user.id)
+    home_data = user.get('home_data', {})
+    medals = home_data.get('medals', [])
+    
+    if 0 <= idx < len(medals):
+        home_data['active_medal'] = medals[idx]
+        update_user(user['user_id'], home_data=home_data)
+        await callback.answer(f"Медаль установлена!")
+        
+    await cb_town_home_medals(callback)
 
 @router.callback_query(F.data == "town_claim_daily")
 async def cb_town_claim_daily(callback: CallbackQuery):
@@ -170,11 +249,8 @@ async def cb_town_home_settings(callback: CallbackQuery):
     
     unlocked = home_data.get("unlocked_skins", ["base"])
     current_skin = home_data.get("skin", "base")
-    
     skins = get_all_home_skins()
-    
-    text = "🎨 **Архитектура и оформление**\n\nВыберите внешний вид вашего жилища. Некоторые стили требуют золота, алмазов или особых заслуг.\n\n"
-    
+    text = "🎨 **Архитектура и оформление**\n\nВыберите внешний вид вашего жилища.\n\n"
     buttons = []
     
     for skin_id, skin_info in skins.items():
@@ -198,19 +274,19 @@ async def cb_town_home_settings(callback: CallbackQuery):
                 cb_data = f"home_skin_unlock:{skin_id}"
         
         text += f"• **{name}** — {status_text}\n"
-        
         if cb_data != "ignore":
             btn_text = f"{name} ({status_text.split(' ')[0]})" if "🔒" not in status_text else f"Разблокировать {name}"
             buttons.append([InlineKeyboardButton(text=btn_text, callback_data=cb_data)])
 
     buttons.append([InlineKeyboardButton(text="🔙 Назад в Дом", callback_data="town_home")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
 @router.callback_query(F.data.startswith("home_skin_"))
 async def cb_town_skin_action(callback: CallbackQuery):
-    action, skin_id = callback.data.split(":")[1:]
+    prefix, skin_id = callback.data.split(":")
+    action = prefix.split("_")[-1]
+    
     skins = get_all_home_skins()
     skin_info = skins.get(skin_id)
     
@@ -250,35 +326,24 @@ async def cb_town_skin_action(callback: CallbackQuery):
         stats = home_data.get('stats', {})
         titles = get_unlocked_titles(home_data)
         clan_id = user.get('clan_id', 0)
+        can_unlock, error_msg = True, "Условия не выполнены."
         
-        can_unlock = True
-        error_msg = "Условия не выполнены."
-        
-        # Проверяем все поддерживаемые ключи из БД
         if "req_level" in skin_info and user.get("level", 1) < skin_info["req_level"]:
             can_unlock, error_msg = False, f"Требуется уровень: {skin_info['req_level']}"
-            
         elif "req_mobs" in skin_info and stats.get("mobs_killed", 0) < skin_info["req_mobs"]:
             can_unlock, error_msg = False, f"Нужно убить монстров: {skin_info['req_mobs']}"
-            
         elif "req_bosses" in skin_info and stats.get("bosses_killed", 0) < skin_info["req_bosses"]:
             can_unlock, error_msg = False, f"Нужно убить боссов: {skin_info['req_bosses']}"
-            
         elif "req_pvp_wins" in skin_info and stats.get("pvp_wins", 0) < skin_info["req_pvp_wins"]:
             can_unlock, error_msg = False, f"Побед на Арене: {skin_info['req_pvp_wins']}"
-            
         elif "req_war_clears" in skin_info and stats.get("war_clears", 0) < skin_info["req_war_clears"]:
             can_unlock, error_msg = False, f"Зачисток в войне: {skin_info['req_war_clears']}"
-            
         elif "req_deaths" in skin_info and stats.get("deaths_count", 0) < skin_info["req_deaths"]:
             can_unlock, error_msg = False, f"Смертей: {skin_info['req_deaths']}"
-            
         elif "req_title" in skin_info and skin_info["req_title"] not in titles:
             can_unlock, error_msg = False, f"Требуется титул: {skin_info['req_title']}"
-            
         elif "req_clan_lvl" in skin_info:
-            if clan_id == 0:
-                can_unlock, error_msg = False, "Вы не состоите в клане!"
+            if clan_id == 0: can_unlock, error_msg = False, "Вы не состоите в клане!"
             else:
                 clan = get_clan(clan_id)
                 if not clan or clan.get("level", 1) < skin_info["req_clan_lvl"]:

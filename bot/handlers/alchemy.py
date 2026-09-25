@@ -1,6 +1,6 @@
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from database import get_user, update_user, get_all_ingredients, get_item_name
+from database import get_user, update_user, get_all_ingredients, get_item_name, track_stat
 
 router = Router()
 
@@ -120,6 +120,8 @@ async def explore_execute_mix(callback: CallbackQuery):
         trait_str = ", ".join(common_traits)
         potion_name = f"Зелье: {trait_str}"
         inv.setdefault("potions", []).append(potion_name)
+        
+        track_stat(user['user_id'], 'potions_crafted', 1)
         
         disc_text = f"\n💡 **Открыты свойства:** {', '.join(new_discovered)}!" if new_discovered else "\n(Эти свойства вам уже были известны)"
         result_msg = f"✨ **Эксперимент успешен!**\nСоздано: **[{potion_name}]**{disc_text}"
@@ -269,6 +271,8 @@ async def produce_batch_execute(callback: CallbackQuery):
     for _ in range(craft_qty):
         potions.append(potion_name)
         
+    track_stat(user['user_id'], 'potions_crafted', craft_qty)
+    
     inv["materials"] = materials
     update_user(user['user_id'], inventory=inv)
     
@@ -285,4 +289,3 @@ async def produce_batch_execute(callback: CallbackQuery):
         [InlineKeyboardButton(text="🔙 В лагерь", callback_data="town_back")]
     ])
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-

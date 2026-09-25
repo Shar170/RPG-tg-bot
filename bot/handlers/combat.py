@@ -21,33 +21,19 @@ def get_combat_kb(ap: int, distance: str):
 
 def render_effects_badge(combat: dict) -> str:
     badges = []
-    if combat.get('buff_armor', 0) > 0:
-        badges.append(f"🛡️ Броня +{combat['buff_armor']} ({combat.get('buff_armor_t', 1)}х)")
-    if combat.get('buff_str', 0) > 0:
-        badges.append(f"⚔️ Сила +{combat['buff_str']} ({combat.get('buff_str_t', 1)}х)")
-    if combat.get('buff_dodge', 0) > 0:
-        badges.append(f"💨 Уворот +{int(combat['buff_dodge']*100)}% ({combat.get('buff_dodge_t', 1)}х)")
-    if combat.get('debuff_blind', 0) > 0:
-        badges.append(f"👁️ Слепота ({combat['debuff_blind']}х)")
-    if combat.get('debuff_fragile', 0) > 0:
-        badges.append(f"💔 Хрупкость ({combat['debuff_fragile']}х)")
-    if combat.get('debuff_vuln', 0) > 0:
-        badges.append(f"🎯 Уязвимость +25% ({combat['debuff_vuln']}х)")
+    if combat.get('buff_armor', 0) > 0: badges.append(f"🛡️ Броня +{combat['buff_armor']} ({combat.get('buff_armor_t', 1)}х)")
+    if combat.get('buff_str', 0) > 0: badges.append(f"⚔️ Сила +{combat['buff_str']} ({combat.get('buff_str_t', 1)}х)")
+    if combat.get('buff_dodge', 0) > 0: badges.append(f"💨 Уворот +{int(combat['buff_dodge']*100)}% ({combat.get('buff_dodge_t', 1)}х)")
+    if combat.get('debuff_blind', 0) > 0: badges.append(f"👁️ Слепота ({combat['debuff_blind']}х)")
+    if combat.get('debuff_fragile', 0) > 0: badges.append(f"💔 Хрупкость ({combat['debuff_fragile']}х)")
+    if combat.get('debuff_vuln', 0) > 0: badges.append(f"🎯 Уязвимость +25% ({combat['debuff_vuln']}х)")
     
-    # Вражеские дебаффы
-    if combat.get('enemy_blind', 0) > 0:
-        badges.append(f"👁️ Враг ослеплен ({combat['enemy_blind']}х)")
-    if combat.get('enemy_vuln', 0) > 0:
-        badges.append(f"🎯 Враг уязвим ({combat['enemy_vuln']}х)")
-        
-    if combat.get('dot_burn', 0) > 0:
-        badges.append(f"🔥 Горение ({combat['dot_burn']}х)")
-    if combat.get('dot_poison', 0) > 0:
-        badges.append(f"🟢 Отравление ({combat['dot_poison']}х)")
-    if combat.get('dot_bleed', 0) > 0:
-        badges.append(f"🩸 Кровотечение ({combat['dot_bleed']}х)")
-    if combat.get('enemy_stun', 0) > 0:
-        badges.append(f"💫 Враг оглушен ({combat['enemy_stun']}х)")
+    if combat.get('enemy_blind', 0) > 0: badges.append(f"👁️ Враг ослеплен ({combat['enemy_blind']}х)")
+    if combat.get('enemy_vuln', 0) > 0: badges.append(f"🎯 Враг уязвим ({combat['enemy_vuln']}х)")
+    if combat.get('dot_burn', 0) > 0: badges.append(f"🔥 Горение ({combat['dot_burn']}х)")
+    if combat.get('dot_poison', 0) > 0: badges.append(f"🟢 Отравление ({combat['dot_poison']}х)")
+    if combat.get('dot_bleed', 0) > 0: badges.append(f"🩸 Кровотечение ({combat['dot_bleed']}х)")
+    if combat.get('enemy_stun', 0) > 0: badges.append(f"💫 Враг оглушен ({combat['enemy_stun']}х)")
 
     return " | ".join(badges) if badges else "Нет"
 
@@ -76,11 +62,12 @@ async def handle_combat_victory(callback: CallbackQuery, user_id: int, combat: d
     track_stat(user_id, 'mobs_killed', 1)
     
     enemy_id = combat.get('enemy_id', '')
+    if enemy_id:
+        track_stat(user_id, f"kills_{enemy_id}", 1)
+        
     if is_boss:
         home['bosses_killed'] = home.get('bosses_killed', 0) + 1
         track_stat(user_id, 'bosses_killed', 1)
-        if enemy_id:
-            track_stat(user_id, f"kills_{enemy_id}", 1)
 
     add_quest_progress(user_id, "kill_mobs", 1)
 
@@ -110,8 +97,7 @@ async def handle_combat_victory(callback: CallbackQuery, user_id: int, combat: d
     dropped_count = 0
 
     for loot in loot_table:
-        if dropped_count >= max_drops:
-            break
+        if dropped_count >= max_drops: break
         if random.random() <= loot['chance']:
             qty = random.randint(loot['min'], loot['max'])
             item_db = get_item(loot['item_id'])
@@ -126,14 +112,11 @@ async def handle_combat_victory(callback: CallbackQuery, user_id: int, combat: d
             drop_msg += f"\n✨ Выбито: **{get_item_name(loot['item_id'])}** (x{qty})"
             dropped_count += 1
 
-    # --- ЗАПИСЬ СОБЫТИЙ В ВЕСТНИК ---
     if dungeon_data.get('dungeon_type') == 'war' and is_boss:
         home, bonus_gems = progress_war_region(dungeon_data['war_region_id'], user_id, home_data=home)
         fresh_user['gems'] = fresh_user.get('gems', 0) + bonus_gems
         drop_msg += "\n\n🌍 **Вклад в освобождение региона засчитан!** Медаль добавлена на Стенд Славы в доме."
-        
         add_global_event(f"🌍 Игрок **{fresh_user['username']}** нанес сокрушительный удар по силам демонов в Войне за Камарию!")
-        
         if bonus_gems > 0:
             drop_msg += f"\n🏆 **РЕГИОН ПОЛНОСТЬЮ ОСВОБОЖДЕН!** Награда: +{bonus_gems} 💎!"
             add_global_event(f"🏆 Великий герой **{fresh_user['username']}** нанес решающий удар и полностью ОСВОБОДИЛ один из регионов!")
@@ -142,18 +125,9 @@ async def handle_combat_victory(callback: CallbackQuery, user_id: int, combat: d
         add_global_event(f"💀 Игрок **{fresh_user['username']}** бросил вызов Боссу Дня и вышел победителем!")
 
     update_user(
-        user_id,
-        state='STATE_DUNGEON',
-        gold=fresh_user['gold'],
-        gems=fresh_user.get('gems', 0),
-        hp=fresh_user['hp'],
-        max_hp=fresh_user['max_hp'],
-        level=fresh_user['level'],
-        xp=fresh_user['xp'],
-        inventory=inv,
-        combat_data={},
-        dungeon_data=dungeon_data,
-        home_data=home
+        user_id, state='STATE_DUNGEON', gold=fresh_user['gold'], gems=fresh_user.get('gems', 0),
+        hp=fresh_user['hp'], max_hp=fresh_user['max_hp'], level=fresh_user['level'], xp=fresh_user['xp'],
+        inventory=inv, combat_data={}, dungeon_data=dungeon_data, home_data=home
     )
 
     if is_boss:
@@ -162,7 +136,6 @@ async def handle_combat_victory(callback: CallbackQuery, user_id: int, combat: d
             clan = get_clan(fresh_user['clan_id'])
             if clan:
                 update_clan(clan['clan_id'], weekly_raids=clan.get('weekly_raids', 0) + 1, total_raids=clan.get('total_raids', 0) + 1)
-
         from handlers.town import get_town_kb
         update_user(user_id, state='STATE_TOWN', dungeon_data={})
         if 'coop_host' in combat:
@@ -180,8 +153,7 @@ async def join_coop(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     host_id = int(callback.data.replace("coop_join_", ""))
     host_user = get_user(host_id)
-    if not host_user or host_user['state'] != 'STATE_COMBAT':
-        return await callback.answer("Игрок уже закончил бой!", show_alert=True)
+    if not host_user or host_user['state'] != 'STATE_COMBAT': return await callback.answer("Игрок уже закончил бой!", show_alert=True)
     combat_data = host_user['combat_data'].copy()
     combat_data['coop_host'] = host_id
     combat_data['ap'] = 3
@@ -192,9 +164,7 @@ async def join_coop(callback: CallbackQuery):
 async def combat_attack(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     combat = user.get('combat_data', {})
-
-    if combat.get('ap', 0) < 2:
-        return await callback.answer("Недостаточно ОД!", show_alert=True)
+    if combat.get('ap', 0) < 2: return await callback.answer("Недостаточно ОД!", show_alert=True)
     combat['ap'] -= 2
 
     if 'coop_host' in combat:
@@ -204,8 +174,7 @@ async def combat_attack(callback: CallbackQuery):
             from handlers.town import get_town_kb
             return await callback.message.edit_text("Монстр уже мертв. Возврат в город.", reply_markup=get_town_kb(user))
         enemy_hp = host['combat_data'].get('enemy_hp', 50)
-    else:
-        enemy_hp = combat.get('enemy_hp', 50)
+    else: enemy_hp = combat.get('enemy_hp', 50)
 
     if combat.get('debuff_blind', 0) > 0 and random.random() < 0.4:
         log_msg = "👁️ Вы ослеплены и промахнулись!"
@@ -223,9 +192,7 @@ async def combat_attack(callback: CallbackQuery):
 
         extra_str = combat.get('buff_str', 0)
         dmg = int((base_dmg + w_dmg + extra_str) * row_mult)
-        
-        if combat.get('enemy_vuln', 0) > 0:
-            dmg = int(dmg * 1.25)
+        if combat.get('enemy_vuln', 0) > 0: dmg = int(dmg * 1.25)
 
         mob_skills = combat.get('mob_skills', {})
         enemy_name = combat.get('enemy_name', 'Враг')
@@ -235,12 +202,9 @@ async def combat_attack(callback: CallbackQuery):
         else:
             enemy_hp -= dmg
             log_msg = f"Вы нанесли {dmg} урона!"
-            if extra_str > 0:
-                log_msg += f" (Сила +{extra_str})"
-            if combat.get('enemy_vuln', 0) > 0:
-                log_msg += " (Уязвимость врага)"
-            if row_mult < 1.0:
-                log_msg += " (Штраф за дистанцию)"
+            if extra_str > 0: log_msg += f" (Сила +{extra_str})"
+            if combat.get('enemy_vuln', 0) > 0: log_msg += " (Уязвимость врага)"
+            if row_mult < 1.0: log_msg += " (Штраф за дистанцию)"
 
             if enemy_hp > 0 and random.random() < mob_skills.get("counter", 0):
                 counter_dmg = int(dmg * 0.5)
@@ -259,8 +223,7 @@ async def combat_attack(callback: CallbackQuery):
         update_user(host['user_id'], combat_data=host['combat_data'])
     combat['enemy_hp'] = enemy_hp
 
-    if enemy_hp <= 0:
-        return await handle_combat_victory(callback, user['user_id'], combat)
+    if enemy_hp <= 0: return await handle_combat_victory(callback, user['user_id'], combat)
 
     update_user(user['user_id'], hp=user['hp'], combat_data=combat)
     await render_combat(callback, user, combat, log_msg)
@@ -269,8 +232,7 @@ async def combat_attack(callback: CallbackQuery):
 async def combat_move(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     combat = user.get('combat_data', {})
-    if combat.get('ap', 0) < 1:
-        return await callback.answer("Недостаточно ОД!", show_alert=True)
+    if combat.get('ap', 0) < 1: return await callback.answer("Недостаточно ОД!", show_alert=True)
     combat['ap'] -= 1
     if combat.get('distance', 'close') == "close":
         combat['distance'] = "far"
@@ -295,20 +257,10 @@ async def combat_end_turn(callback: CallbackQuery):
         combat['enemy_hp'] = host['combat_data'].get('enemy_hp', 50)
 
     log_parts = []
-
     dot_dmg = 0
-    if combat.get('dot_burn', 0) > 0:
-        dot_dmg += 15
-        combat['dot_burn'] -= 1
-        log_parts.append("🔥 Ожог нанес врагу 15 урона")
-    if combat.get('dot_poison', 0) > 0:
-        dot_dmg += 12
-        combat['dot_poison'] -= 1
-        log_parts.append("🟢 Яд отравил врага на 12 урона")
-    if combat.get('dot_bleed', 0) > 0:
-        dot_dmg += 10
-        combat['dot_bleed'] -= 1
-        log_parts.append("🩸 Кровотечение сняло врагу 10 урона")
+    if combat.get('dot_burn', 0) > 0: dot_dmg += 15; combat['dot_burn'] -= 1; log_parts.append("🔥 Ожог нанес врагу 15 урона")
+    if combat.get('dot_poison', 0) > 0: dot_dmg += 12; combat['dot_poison'] -= 1; log_parts.append("🟢 Яд отравил врага на 12 урона")
+    if combat.get('dot_bleed', 0) > 0: dot_dmg += 10; combat['dot_bleed'] -= 1; log_parts.append("🩸 Кровотечение сняло врагу 10 урона")
 
     if dot_dmg > 0:
         combat['enemy_hp'] -= dot_dmg
@@ -325,35 +277,26 @@ async def combat_end_turn(callback: CallbackQuery):
     else:
         dodge_chance = 0.05 + combat.get('buff_dodge', 0.0)
         enemy_name = combat.get('enemy_name', 'Враг')
-        
-        if combat.get('enemy_blind', 0) > 0 and random.random() < 0.4:
-            log_parts.append(f"👁️ {enemy_name} ослеплен и бьет мимо!")
-        elif random.random() < dodge_chance:
-            log_parts.append("💨 Вы ловко увернулись от удара монстра!")
+        if combat.get('enemy_blind', 0) > 0 and random.random() < 0.4: log_parts.append(f"👁️ {enemy_name} ослеплен и бьет мимо!")
+        elif random.random() < dodge_chance: log_parts.append("💨 Вы ловко увернулись от удара монстра!")
         else:
             armor_id = user['inventory'].get("equipment", {}).get("armor")
             base_armor = get_item(armor_id)['stats'].get('def', 0) if armor_id else 0
-            
-            if combat.get('debuff_fragile', 0) > 0:
-                base_armor = int(base_armor * 0.5)
+            if combat.get('debuff_fragile', 0) > 0: base_armor = int(base_armor * 0.5)
 
             total_armor = base_armor + combat.get('buff_armor', 0)
             mob_skills = combat.get('mob_skills', {})
-
             mob_pref_dist = "close" if combat.get('mob_pref', 'front') == "front" else "far"
+            
             if combat.get('distance', 'close') != mob_pref_dist and random.random() < mob_skills.get('reposition', 0):
                 combat['distance'] = mob_pref_dist
                 action = "сокращает" if mob_pref_dist == "close" else "разрывает"
                 log_parts.append(f"🏃 Враг {action} дистанцию!")
 
-            dmg_min = combat.get('dmg_min', 10)
-            dmg_max = combat.get('dmg_max', 15)
+            dmg_min, dmg_max = combat.get('dmg_min', 10), combat.get('dmg_max', 15)
             raw_dmg = random.randint(dmg_min, dmg_max)
-            if combat.get('distance', 'close') != mob_pref_dist:
-                raw_dmg = int(raw_dmg * 0.5)
-
-            if combat.get('debuff_vuln', 0) > 0:
-                raw_dmg = int(raw_dmg * 1.25)
+            if combat.get('distance', 'close') != mob_pref_dist: raw_dmg = int(raw_dmg * 0.5)
+            if combat.get('debuff_vuln', 0) > 0: raw_dmg = int(raw_dmg * 1.25)
 
             monster_dmg = calculate_damage_received(raw_dmg, total_armor)
             user['hp'] -= monster_dmg
@@ -391,11 +334,9 @@ async def combat_use_potion_menu(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     combat = user.get('combat_data', {})
     inv = user['inventory']
-    if combat.get('ap', 0) < 1:
-        return await callback.answer("Недостаточно ОД!", show_alert=True)
+    if combat.get('ap', 0) < 1: return await callback.answer("Недостаточно ОД!", show_alert=True)
     potions = list(set(inv.get("potions", [])))
-    if not potions:
-        return await callback.answer("У вас нет зелий!", show_alert=True)
+    if not potions: return await callback.answer("У вас нет зелий!", show_alert=True)
 
     buttons = []
     for i, p in enumerate(potions):
@@ -412,18 +353,15 @@ async def combat_drink_cancel(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("c_drink_"))
 async def execute_drink_combat(callback: CallbackQuery):
-    if callback.data == "c_drink_cancel":
-        return
+    if callback.data == "c_drink_cancel": return
     user = get_user(callback.from_user.id)
     combat = user.get('combat_data', {})
     inv = user['inventory']
-    if combat.get('ap', 0) < 1:
-        return await callback.answer("Недостаточно ОД!", show_alert=True)
+    if combat.get('ap', 0) < 1: return await callback.answer("Недостаточно ОД!", show_alert=True)
 
     idx = int(callback.data.replace("c_drink_", ""))
     unique_potions = list(set(inv.get("potions", [])))
-    if idx >= len(unique_potions):
-        return await callback.answer("Ошибка выбора зелья!", show_alert=True)
+    if idx >= len(unique_potions): return await callback.answer("Ошибка выбора зелья!", show_alert=True)
 
     used_item = unique_potions[idx]
     inv["potions"].remove(used_item)
@@ -438,32 +376,19 @@ async def execute_drink_combat(callback: CallbackQuery):
         combat['enemy_hp'] = host['combat_data'].get('enemy_hp', 50)
 
     p_lower = used_item.lower()
-    
     positive_keywords = ["хил", "реген", "рагу", "ускорение", "бодрость", "броня", "сопротивление", "тяжесть", "сила", "уклонение", "ловкость", "полет", "очищение", "мана", "богатство", "удача", "свет", "защита"]
     is_thrown = not any(pos in p_lower for pos in positive_keywords)
     
-    if is_thrown:
-        log_msg = f"🧪 Вы бросили во врага [{used_item}]:\n"
-    else:
-        log_msg = f"🧪 Вы выпили [{used_item}]:\n"
-
+    log_msg = f"🧪 Вы бросили во врага [{used_item}]:\n" if is_thrown else f"🧪 Вы выпили [{used_item}]:\n"
     mob_skills = combat.get('mob_skills', {})
-    immunes = mob_skills.get('immune', [])
-    weaks = mob_skills.get('weak', [])
-    resists = mob_skills.get('resist', [])
+    immunes, weaks, resists = mob_skills.get('immune', []), mob_skills.get('weak', []), mob_skills.get('resist', [])
     enemy_name = combat.get('enemy_name', 'Враг')
 
     def calc_element_dmg(base_val: int, elem: str) -> tuple[int, str]:
-        if elem in immunes:
-            return 0, f"🚫 {enemy_name} невосприимчив к [{elem}]! (Иммунитет)\n"
-        multiplier = 1.0
-        note = ""
-        if elem in weaks:
-            multiplier = 1.5
-            note = " 💥 Уязвимость (+50% урона)!"
-        elif elem in resists:
-            multiplier = 0.5
-            note = " 🛡️ Сопротивление (-50% урона)."
+        if elem in immunes: return 0, f"🚫 {enemy_name} невосприимчив к [{elem}]! (Иммунитет)\n"
+        multiplier, note = 1.0, ""
+        if elem in weaks: multiplier, note = 1.5, " 💥 Уязвимость (+50% урона)!"
+        elif elem in resists: multiplier, note = 0.5, " 🛡️ Сопротивление (-50% урона)."
         return int(base_val * multiplier), note
 
     if "рагу" in p_lower:
@@ -478,98 +403,54 @@ async def execute_drink_combat(callback: CallbackQuery):
         combat['ap'] += 2
         log_msg += "⚡ +2 ОД\n"
     if "броня" in p_lower or "сопротивление" in p_lower or "тяжесть" in p_lower:
-        combat['buff_armor'] = combat.get('buff_armor', 0) + 15
-        combat['buff_armor_t'] = 3
+        combat['buff_armor'] = combat.get('buff_armor', 0) + 15; combat['buff_armor_t'] = 3
         log_msg += "🛡️ Броня увеличена на +15 на 3 хода\n"
     if "сила" in p_lower and "сила тьмы" not in p_lower:
-        combat['buff_str'] = combat.get('buff_str', 0) + 20
-        combat['buff_str_t'] = 2
+        combat['buff_str'] = combat.get('buff_str', 0) + 20; combat['buff_str_t'] = 2
         log_msg += "⚔️ Сила атаки увеличена на +20 на 2 хода\n"
     if "уклонение" in p_lower or "ловкость" in p_lower or "полет" in p_lower:
-        combat['buff_dodge'] = 0.35
-        combat['buff_dodge_t'] = 2
+        combat['buff_dodge'] = 0.35; combat['buff_dodge_t'] = 2
         log_msg += "💨 Шанс уворота +35% на 2 хода\n"
     if "очищение" in p_lower or "мана" in p_lower:
-        combat['debuff_blind'] = 0
-        combat['debuff_fragile'] = 0
-        combat['debuff_vuln'] = 0
+        combat['debuff_blind'] = 0; combat['debuff_fragile'] = 0; combat['debuff_vuln'] = 0
         log_msg += "✨ Очищение: все негативные эффекты сняты!\n"
 
     if "урон огнем" in p_lower:
         dmg, note = calc_element_dmg(30 + user.get('level', 1) * 5, "fire")
-        if dmg > 0:
-            combat['enemy_hp'] -= dmg
-            combat['dot_burn'] = 3
-            log_msg += f"🔥 Огненный взрыв: {dmg} урона + поджог на 3 хода!{note}\n"
-        else:
-            log_msg += note
-
+        if dmg > 0: combat['enemy_hp'] -= dmg; combat['dot_burn'] = 3; log_msg += f"🔥 Огненный взрыв: {dmg} урона + поджог на 3 хода!{note}\n"
+        else: log_msg += note
     if "урон ядом" in p_lower:
         dmg, note = calc_element_dmg(20 + user.get('level', 1) * 4, "poison")
-        if dmg > 0:
-            combat['enemy_hp'] -= dmg
-            combat['dot_poison'] = 4
-            log_msg += f"🟢 Отравление: {dmg} урона + яд на 4 хода!{note}\n"
-        else:
-            log_msg += note
-
+        if dmg > 0: combat['enemy_hp'] -= dmg; combat['dot_poison'] = 4; log_msg += f"🟢 Отравление: {dmg} урона + яд на 4 хода!{note}\n"
+        else: log_msg += note
     if "кровотечение" in p_lower:
-        if "bleed" in immunes:
-            log_msg += f"🚫 У {enemy_name} нет крови! Иммунитет к кровотечению.\n"
-        else:
-            combat['dot_bleed'] = 3
-            log_msg += "🩸 Наложено кровотечение на 3 хода!\n"
-
+        if "bleed" in immunes: log_msg += f"🚫 У {enemy_name} нет крови! Иммунитет к кровотечению.\n"
+        else: combat['dot_bleed'] = 3; log_msg += "🩸 Наложено кровотечение на 3 хода!\n"
     if "урон льдом" in p_lower or "замедление" in p_lower:
         dmg, note = calc_element_dmg(25 + user.get('level', 1) * 4, "ice")
-        if dmg > 0:
-            combat['enemy_hp'] -= dmg
-            combat['distance'] = "far"
-            log_msg += f"❄️ Лед нанес {dmg} урона и отбросил врага!{note}\n"
-        else:
-            log_msg += note
-
+        if dmg > 0: combat['enemy_hp'] -= dmg; combat['distance'] = "far"; log_msg += f"❄️ Лед нанес {dmg} урона и отбросил врага!{note}\n"
+        else: log_msg += note
     if "урон током" in p_lower:
         dmg, note = calc_element_dmg(35 + user.get('level', 1) * 6, "shock")
-        if dmg > 0:
-            combat['enemy_hp'] -= dmg
-            log_msg += f"⚡ Электрошок: {dmg} урона сквозь броню!{note}\n"
-        else:
-            log_msg += note
-
+        if dmg > 0: combat['enemy_hp'] -= dmg; log_msg += f"⚡ Электрошок: {dmg} урона сквозь броню!{note}\n"
+        else: log_msg += note
     if "сила тьмы" in p_lower:
         dmg, note = calc_element_dmg(35 + user.get('level', 1) * 6, "dark")
-        if dmg > 0:
-            combat['enemy_hp'] -= dmg
-            log_msg += f"🌑 Энергия Бездны: {dmg} урона!{note}\n"
-        else:
-            log_msg += note
-
+        if dmg > 0: combat['enemy_hp'] -= dmg; log_msg += f"🌑 Энергия Бездны: {dmg} урона!{note}\n"
+        else: log_msg += note
     if "свет" in p_lower or "защита от тьмы" in p_lower:
         dmg, note = calc_element_dmg(40 + user.get('level', 1) * 5, "light")
-        if dmg > 0:
-            combat['enemy_hp'] -= dmg
-            combat['debuff_blind'] = 0
-            log_msg += f"☀️ Священное сияние: {dmg} святого урона!{note}\n"
-        else:
-            log_msg += note
+        if dmg > 0: combat['enemy_hp'] -= dmg; combat['debuff_blind'] = 0; log_msg += f"☀️ Священное сияние: {dmg} святого урона!{note}\n"
+        else: log_msg += note
 
     if "вампиризм" in p_lower:
-        if "bleed" in immunes:
-            log_msg += f"🚫 Нельзя выпить жизнь из бескровного существа!\n"
-        else:
-            v_dmg = 20
-            combat['enemy_hp'] -= v_dmg
-            user['hp'] = min(user['max_hp'], user['hp'] + v_dmg)
-            log_msg += f"🩸 Иссушение врага на {v_dmg} ХП в вашу пользу!\n"
-
+        if "bleed" in immunes: log_msg += f"🚫 Нельзя выпить жизнь из бескровного существа!\n"
+        else: v_dmg = 20; combat['enemy_hp'] -= v_dmg; user['hp'] = min(user['max_hp'], user['hp'] + v_dmg); log_msg += f"🩸 Иссушение врага на {v_dmg} ХП в вашу пользу!\n"
     if "оцепенение" in p_lower or "сон" in p_lower or "страх" in p_lower:
-        combat['enemy_stun'] = 1
-        log_msg += "💫 Враг парализован и пропустит следующий ход!\n"
+        combat['enemy_stun'] = 1; log_msg += "💫 Враг парализован и пропустит следующий ход!\n"
 
     if "богатство" in p_lower or "удача" in p_lower:
-        gold_b = random.randint(30, 80)
-        user['gold'] += gold_b
+        gold_b = random.randint(30, 80); user['gold'] += gold_b
         dungeon_data = user.get('dungeon_data', {})
         dungeon_data.setdefault('gathered_gold', 0)
         dungeon_data['gathered_gold'] += gold_b
@@ -577,36 +458,17 @@ async def execute_drink_combat(callback: CallbackQuery):
         log_msg += f"💰 Превращение в золото: +{gold_b} 🪙!\n"
 
     if "слабость" in p_lower or "ожог" in p_lower or "болезнь" in p_lower or "удушье" in p_lower:
-        if is_thrown:
-            combat['enemy_hp'] -= 15
-            log_msg += "💥 Колба разбилась, нанеся врагу 15 урона от ядовитых паров!\n"
-        else:
-            user['hp'] -= 15
-            log_msg += "🤢 Побочный эффект: ожог пищевода (-15 ХП)!\n"
-            
+        if is_thrown: combat['enemy_hp'] -= 15; log_msg += "💥 Колба разбилась, нанеся врагу 15 урона от ядовитых паров!\n"
+        else: user['hp'] -= 15; log_msg += "🤢 Побочный эффект: ожог пищевода (-15 ХП)!\n"
     if "хрупкость" in p_lower:
-        if is_thrown:
-            combat['enemy_vuln'] = 3
-            log_msg += "🎯 Броня врага разъедена! (Получает +25% урона на 3 хода)\n"
-        else:
-            combat['debuff_fragile'] = 3
-            log_msg += "💔 Побочный эффект: ваша броня ослаблена на 50% на 3 хода!\n"
-            
+        if is_thrown: combat['enemy_vuln'] = 3; log_msg += "🎯 Броня врага разъедена! (Получает +25% урона на 3 хода)\n"
+        else: combat['debuff_fragile'] = 3; log_msg += "💔 Побочный эффект: ваша броня ослаблена на 50% на 3 хода!\n"
     if "слепота" in p_lower:
-        if is_thrown:
-            combat['enemy_blind'] = 2
-            log_msg += "👁️ Враг ослеплен на 2 хода!\n"
-        else:
-            combat['debuff_blind'] = 2
-            log_msg += "👁️ Побочный эффект: ослепление на 2 хода!\n"
-            
+        if is_thrown: combat['enemy_blind'] = 2; log_msg += "👁️ Враг ослеплен на 2 хода!\n"
+        else: combat['debuff_blind'] = 2; log_msg += "👁️ Побочный эффект: ослепление на 2 хода!\n"
     if "уязвимость" in p_lower:
-        if is_thrown:
-            combat['enemy_vuln'] = 3
-            log_msg += "🎯 Враг стал уязвим! (Получает +25% урона на 3 хода)\n"
-        else:
-            combat['debuff_vuln'] = 3
-            log_msg += "🎯 Побочный эффект: входящий урон увеличен на 25% на 3 хода!\n"
+        if is_thrown: combat['enemy_vuln'] = 3; log_msg += "🎯 Враг стал уязвим! (Получает +25% урона на 3 хода)\n"
+        else: combat['debuff_vuln'] = 3; log_msg += "🎯 Побочный эффект: входящий урон увеличен на 25% на 3 хода!\n"
 
     if 'coop_host' in combat:
         host = get_user(combat['coop_host'])
@@ -620,8 +482,7 @@ async def execute_drink_combat(callback: CallbackQuery):
         from handlers.town import get_town_kb
         return await callback.message.edit_text("☠️ **Вы погибли от побочного эффекта зелья!**", reply_markup=get_town_kb(user), parse_mode="Markdown")
 
-    if combat.get('enemy_hp', 50) <= 0:
-        return await handle_combat_victory(callback, user['user_id'], combat)
+    if combat.get('enemy_hp', 50) <= 0: return await handle_combat_victory(callback, user['user_id'], combat)
 
     update_user(user['user_id'], hp=user['hp'], inventory=inv, combat_data=combat)
     await render_combat(callback, user, combat, log_msg)
@@ -647,7 +508,6 @@ async def combat_flee_confirm(callback: CallbackQuery):
 @router.callback_query(F.data == "combat_act_flee_cancel")
 async def combat_flee_cancel(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
-    
     if user.get('state') == 'STATE_COMBAT':
         combat = user.get('combat_data', {})
         await render_combat(callback, user, combat, "Вы решили остаться и драться!")
@@ -655,4 +515,3 @@ async def combat_flee_cancel(callback: CallbackQuery):
         d_data = user.get('dungeon_data', {})
         from handlers.dungeon import get_navigation_kb
         await callback.message.edit_text("Вы передумали сбегать и продолжили путь.", reply_markup=get_navigation_kb(d_data), parse_mode="Markdown")
-
