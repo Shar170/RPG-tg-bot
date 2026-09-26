@@ -148,32 +148,25 @@ async def produce_catalog(callback: CallbackQuery):
     all_ing = get_all_ingredients()
     materials = user['inventory'].get("materials", {})
     
-    # Ищем все доступные пары с общими ИЗВЕСТНЫМИ свойствами
-    available_recipes = []
     user_mats = [m for m in materials.keys() if materials.get(m, 0) > 0 and m in all_ing]
+    grouped_recipes = {} # Группируем рецепты по итоговому эффекту зелья
     
-    seen_pairs = set()
     for i in range(len(user_mats)):
         for j in range(i + 1, len(user_mats)):
             m1, m2 = user_mats[i], user_mats[j]
-            # Общие свойства, которые игрок УЖЕ ОТКРЫЛ для обоих компонентов
-            known1 = set(known.get(m1, []))
-            known2 = set(known.get(m2, []))
-            shared_known = list(known1.intersection(known2))
+            shared_known = list(set(known.get(m1, [])).intersection(set(known.get(m2, []))))
             
             if shared_known:
+                # Обязательно сортируем, чтобы "Хилл, Мана" и "Мана, Хилл" попали в одну группу
+                shared_known.sort() 
+                traits_title = ", ".join(shared_known)
                 max_craft = min(materials[m1], materials[m2])
-                pair_key = tuple(sorted([m1, m2]))
-                if pair_key not in seen_pairs:
-                    seen_pairs.add(pair_key)
-                    available_recipes.append({
-                        "ing1": m1,
-                        "ing2": m2,
-                        "traits": shared_known,
-                        "max_craft": max_craft
-                    })
+                
+                if traits_title not in grouped_recipes:
+                    grouped_recipes[traits_title] = 0
+                grouped_recipes[traits_title] += max_craft
                     
-    if not available_recipes:
+    if not grouped_recipes:
         text = (
             "⚗️ **Производственный цех**\n\n"
             "❌ Нет доступных рецептов из текущих запасов!\n\n"
@@ -190,16 +183,52 @@ async def produce_catalog(callback: CallbackQuery):
     text = "⚗️ **Производство: Выберите зелье для крафта**\nСформировано на основе ваших знаний и запасов:\n\n"
     buttons = []
     
-    for r in available_recipes[:15]: # Лимит 15 кнопок для экрана
-        traits_title = ", ".join(r["traits"])
-        name1 = all_ing[r['ing1']]['name']
-        name2 = all_ing[r['ing2']]['name']
-        btn_text = f"🧪 {traits_title} ({name1} + {name2}) [до {r['max_craft']} шт]"
-        buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"alch_prod_sel:{r['ing1']}:{r['ing2']}")])
+    for traits_title, total_craft in list(grouped_recipes.items())[:15]: 
+        # Обрезаем строку до 30 символов, чтобы не выйти за лимит callback_data (64 байта)
+        safe_title = traits_title[:30] 
+        btn_text = f"🧪 {traits_title} [доступно: {total_craft} шт]"
+        buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"alch_grp:{safe_title}")])
         
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="town_alchemy")])
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
 
+
+# --- НОВЫЙ ХЭНДЛЕР: ПОДМЕНЮ ВЫБОРА РЕЦЕПТА ---
+@router.callback_query(F.data.startswith("alch_grp:"))
+async def produce_group_select(callback: CallbackQuery):
+    safe_title = callback.data.split(":", 1)[1]
+    user = get_user(callback.from_user.id)
+    known = user.get("known_traits", {})
+    all_ing = get_all_ingredients()
+    materials = user['inventory'].get("materials", {})
+
+    user_mats = [m for m in materials.keys() if materials.get(m, 0) > 0 and m in all_ing]
+    buttons = []
+    
+    for i in range(len(user_mats)):
+        for j in range(i + 1, len(user_mats)):
+            m1, m2 = user_mats[i], user_mats[j]
+            shared_known = list(set(known.get(m1, [])).intersection(set(known.get(m2, []))))
+            
+            if shared_known:
+                shared_known.sort()
+                traits_title = ", ".join(shared_known)
+                
+                # Если сгенерированный эффект совпадает с выбранным из прошлого меню
+                if traits_title[:30] == safe_title:
+                    max_craft = min(materials[m1], materials[m2])
+                    name1 = all_ing[m1]['name']
+                    name2 = all_ing[m2]['name']
+                    btn_text = f"🌿 {name1} + {name2} [до {max_craft} шт]"
+                    buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"alch_prod_sel:{m1}:{m2}")])
+
+    text = f"⚗️ **Рецепты для зелья:** [{safe_title}]\n\nВыберите комбинацию ингредиентов:"
+    buttons.append([InlineKeyboardButton(text="🔙 К списку зелий", callback_data="alch_mode_produce")])
+    
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
+
+
+# --- ИЗМЕНЕННЫЙ ХЭНДЛЕР: МЕНЮ ВЫБОРА КОЛИЧЕСТВА ---
 @router.callback_query(F.data.startswith("alch_prod_sel:"))
 async def produce_batch_select(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
@@ -216,6 +245,7 @@ async def produce_batch_select(callback: CallbackQuery):
         
     known = user.get("known_traits", {})
     shared_traits = list(set(known.get(ing1, [])).intersection(set(known.get(ing2, []))))
+    shared_traits.sort() # Поддерживаем сортировку
     traits_str = ", ".join(shared_traits)
     
     name1 = all_ing[ing1]['name']
@@ -236,9 +266,13 @@ async def produce_batch_select(callback: CallbackQuery):
         row.append(InlineKeyboardButton(text="x5", callback_data=f"alch_batch_run:{ing1}:{ing2}:5"))
     row.append(InlineKeyboardButton(text=f"Все ({max_possible} шт)", callback_data=f"alch_batch_run:{ing1}:{ing2}:{max_possible}"))
     buttons.append(row)
-    buttons.append([InlineKeyboardButton(text="🔙 Назад к каталогу", callback_data="alch_mode_produce")])
+    
+    # Кнопка возврата теперь ведет не в корень, а в подменю конкретного зелья
+    safe_title = traits_str[:30]
+    buttons.append([InlineKeyboardButton(text="🔙 Назад к рецептам", callback_data=f"alch_grp:{safe_title}")])
     
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
+
 
 @router.callback_query(F.data.startswith("alch_batch_run:"))
 async def produce_batch_execute(callback: CallbackQuery):
@@ -289,3 +323,4 @@ async def produce_batch_execute(callback: CallbackQuery):
         [InlineKeyboardButton(text="🔙 В лагерь", callback_data="town_back")]
     ])
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+

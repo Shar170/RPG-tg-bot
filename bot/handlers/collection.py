@@ -1,5 +1,6 @@
 import json
 import random
+import time
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from database import get_connection, get_user, update_user

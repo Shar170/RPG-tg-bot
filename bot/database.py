@@ -103,6 +103,14 @@ def init_db():
         cursor.execute('''CREATE TABLE IF NOT EXISTS user_boxes (
             user_id INTEGER, box_id TEXT, count INTEGER DEFAULT 0, 
             PRIMARY KEY(user_id, box_id))''')
+
+        # --- ТАБЛИЦЫ ДЛЯ БАРАХОЛКИ (ТП) ---
+        cursor.execute('''CREATE TABLE IF NOT EXISTS trading_post (
+            lot_id INTEGER PRIMARY KEY AUTOINCREMENT, seller_id INTEGER, item_id TEXT, 
+            item_type TEXT, price INTEGER, created_at REAL, expires_at REAL, is_bot INTEGER DEFAULT 0)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS tp_history (
+            tx_id INTEGER PRIMARY KEY AUTOINCREMENT, seller_id INTEGER, buyer_id INTEGER,
+            item_id TEXT, price INTEGER, tax_paid INTEGER, timestamp REAL)''')
             
         conn.commit()
 
@@ -138,7 +146,7 @@ def seed_bots():
             lvl = random.randint(10, 45)
             max_hp = 100 + (lvl * 15)
             clan_id = random.choice(clan_ids)
-            inv = json.dumps({"potions": ["Зелье: Хил", "Зелье: Хил", "Зелье: Хил", "Зелье: Реген ОД"]})
+            inv = json.dumps({"potions": ["Зелье: Хил", "Зелье: Хил"], "backpack": ["iron_sword", "chainmail"], "materials": {"iron_ingot": 5}})
             stats = json.dumps({"stats": {"pvp_wins": random.randint(5, 50), "bosses_killed": random.randint(10, 100)}})
             
             cursor.execute("""
@@ -159,6 +167,33 @@ def simulate_bot_activity():
     events_to_add = []
     with get_connection() as conn:
         cursor = conn.cursor()
+
+        # 1. Возврат просроченных лотов с ТП
+        cursor.execute("SELECT lot_id, seller_id, item_id, item_type, is_bot FROM trading_post WHERE expires_at < ?", (now,))
+        for lot_id, s_id, i_id, idx_type, is_b in cursor.fetchall():
+            if not is_b: give_item(s_id, i_id, idx_type, 1)
+            cursor.execute("DELETE FROM trading_post WHERE lot_id=?", (lot_id,))
+            
+        # 2. Боты на ТП
+        cursor.execute("SELECT COUNT(*) FROM trading_post WHERE is_bot=0")
+        player_lots = cursor.fetchone()[0]
+        if player_lots < 50:
+            cursor.execute("SELECT user_id FROM users WHERE is_bot=1 ORDER BY RANDOM() LIMIT 2")
+            bot_sellers = cursor.fetchall()
+            items_pool = [("iron_sword", "weapon", 250), ("chainmail", "armor", 350), ("epic_token", "material", 200)]
+            for (bot_id,) in bot_sellers:
+                i_id, i_type, bp = random.choice(items_pool)
+                price = int(bp * random.uniform(0.9, 1.3))
+                cursor.execute("INSERT INTO trading_post (seller_id, item_id, item_type, price, created_at, expires_at, is_bot) VALUES (?, ?, ?, ?, ?, ?, 1)", (bot_id, i_id, i_type, price, now, now + 86400))
+                
+            cursor.execute("SELECT lot_id, seller_id, item_id, price FROM trading_post WHERE is_bot=0 ORDER BY RANDOM() LIMIT 3")
+            for lot_id, s_id, i_id, price in cursor.fetchall():
+                bp = get_item_price(i_id)
+                if price <= bp * 0.9 and random.random() < 0.5:
+                    cursor.execute("DELETE FROM trading_post WHERE lot_id=?", (lot_id,))
+                    u = get_user(s_id)
+                    if u: update_user(s_id, gold=u['gold'] + price)
+
         cursor.execute("SELECT username, clan_id FROM users WHERE is_bot=1 ORDER BY RANDOM() LIMIT 3")
         bots = cursor.fetchall()
         
@@ -206,7 +241,6 @@ def seed_all():
         ]
         cursor.executemany("INSERT OR REPLACE INTO game_settings VALUES (?, ?)", settings)
         
-        # --- СИДИРОВАНИЕ КАРТОЧЕК И ЛУТБОКСОВ ---
         sets_seed = [
             ("set_veg", "Овощи", "Дары природы", "common", "box_common_mats", "forest"),
             ("set_fruit", "Фрукты", "Сладкий урожай", "common", "box_common_mats", "forest"),
@@ -361,6 +395,57 @@ def seed_all():
         conn.commit()
         
         seed_bots()
+
+def give_item(user_id: int, item_id: str, item_type: str, amount: int = 1):
+    user = get_user(user_id)
+    if not user: return
+    inv = user.get('inventory', {})
+    with get_connection() as conn:
+        cur = conn.cursor()
+        if item_type == 'card':
+            cur.execute("INSERT INTO user_cards (user_id, card_id, count, first_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, card_id) DO UPDATE SET count=count+?", (user_id, item_id, amount, time.time(), amount))
+        elif item_type == 'box':
+            cur.execute("INSERT INTO user_boxes (user_id, box_id, count) VALUES (?, ?, ?) ON CONFLICT(user_id, box_id) DO UPDATE SET count=count+?", (user_id, item_id, amount, amount))
+        elif item_type in ['weapon', 'armor']:
+            for _ in range(amount): inv.setdefault('backpack', []).append(item_id)
+            update_user(user_id, inventory=inv)
+        elif item_type == 'material':
+            inv.setdefault('materials', {})[item_id] = inv.get('materials', {}).get(item_id, 0) + amount
+            update_user(user_id, inventory=inv)
+        conn.commit()
+
+def take_item(user_id: int, item_id: str, item_type: str, amount: int = 1) -> bool:
+    user = get_user(user_id)
+    if not user: return False
+    inv = user.get('inventory', {})
+    success = False
+    with get_connection() as conn:
+        cur = conn.cursor()
+        if item_type == 'card':
+            cur.execute("SELECT count FROM user_cards WHERE user_id=? AND card_id=?", (user_id, item_id))
+            res = cur.fetchone()
+            if res and res[0] >= amount:
+                cur.execute("UPDATE user_cards SET count=count-? WHERE user_id=? AND card_id=?", (amount, user_id, item_id))
+                success = True
+        elif item_type == 'box':
+            cur.execute("SELECT count FROM user_boxes WHERE user_id=? AND box_id=?", (user_id, item_id))
+            res = cur.fetchone()
+            if res and res[0] >= amount:
+                cur.execute("UPDATE user_boxes SET count=count-? WHERE user_id=? AND box_id=?", (amount, user_id, item_id))
+                success = True
+        elif item_type in ['weapon', 'armor']:
+            if item_id in inv.get('backpack', []):
+                inv['backpack'].remove(item_id)
+                update_user(user_id, inventory=inv)
+                success = True
+        elif item_type == 'material':
+            if inv.get('materials', {}).get(item_id, 0) >= amount:
+                inv['materials'][item_id] -= amount
+                if inv['materials'][item_id] <= 0: del inv['materials'][item_id]
+                update_user(user_id, inventory=inv)
+                success = True
+        conn.commit()
+    return success
 
 def get_all_home_skins() -> dict:
     with get_connection() as conn:
@@ -806,6 +891,10 @@ def get_item_name(item_id: str) -> str:
         if res: return res[0]
         res = cursor.execute("SELECT name FROM alchemy_ingredients WHERE item_id = ?", (item_id,)).fetchone()
         if res: return res[0]
+        res = cursor.execute("SELECT name, emoji FROM cards WHERE card_id = ?", (item_id,)).fetchone()
+        if res: return f"{res[1]} {res[0]}"
+        res = cursor.execute("SELECT name FROM loot_boxes WHERE box_id = ?", (item_id,)).fetchone()
+        if res: return res[0]
     return str(item_id).replace("_", " ").title()
 
 def get_item_price(item_id: str) -> int:
@@ -873,7 +962,6 @@ def remove_from_queue(user_id: int):
 
 # --- ВЫПАДЕНИЕ КАРТОЧЕК ---
 def roll_card(user_id: int, theme: str = None) -> dict:
-    """Генерирует карточку с учетом pity-ситуации и темы данжа."""
     user = get_user(user_id)
     pity = user.get('pity_counter', 0)
     

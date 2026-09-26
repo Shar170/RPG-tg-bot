@@ -4,8 +4,8 @@ from aiogram.types import TelegramObject, CallbackQuery, Message
 from config import BOT_TOKEN
 from database import init_db, seed_all, get_user, update_user
 
-# Импортируем все хендлеры, включая новый collection
-from handlers import town, dungeon, combat, alchemy, inventory, craft, minigames, market, arena, collection
+# Импортируем все хендлеры, включая новый trading_post
+from handlers import town, dungeon, combat, alchemy, inventory, craft, minigames, market, arena, collection, trading_post
 from handlers.clans import router as clans_router
 
 # Глобальный защитник от "чизинга" старыми кнопками
@@ -24,8 +24,8 @@ class AntiCheeseMiddleware(BaseMiddleware):
 
         elif isinstance(event, Message) and event.text in ["/start", "/town"]:
             user = get_user(event.from_user.id)
-            if user and user.get('state') in ['STATE_ARENA_QUEUE', 'STATE_PVP']:
-                await event.answer("⚔️ Вы находитесь на Арене! Завершите бой или отмените поиск.")
+            if user and user.get('state') in ['STATE_ARENA_QUEUE', 'STATE_PVP', 'STATE_FSM']:
+                await event.answer("⚠️ Завершите текущее действие (бой или ввод текста)!")
                 return
 
         return await handler(event, data)
@@ -50,7 +50,8 @@ async def main():
     dp.include_router(craft.router)
     dp.include_router(market.router)
     dp.include_router(arena.router)
-    dp.include_router(collection.router) # НОВОЕ: Модуль коллекций
+    dp.include_router(collection.router)
+    dp.include_router(trading_post.router) # НОВОЕ: Торговая Площадь
     dp.include_router(clans_router)
     
     print("Бот успешно запущен!")

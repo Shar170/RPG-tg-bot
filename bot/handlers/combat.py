@@ -6,7 +6,7 @@ from database import (
     get_user, update_user, get_item, get_loot_table, get_item_name, get_setting,
     apply_flee_penalty, apply_death_penalty, add_quest_progress, get_clan, update_clan,
     calculate_damage_received, progress_war_region, track_stat, add_global_event,
-    roll_card # Импорт ролла
+    roll_card
 )
 
 router = Router()
@@ -58,17 +58,18 @@ async def handle_combat_victory(callback: CallbackQuery, user_id: int, combat: d
     location_id = f"event_{datetime.datetime.today().weekday()}" if dungeon_data.get('dungeon_type', 'solo') == "event" else "solo"
     is_boss = not dungeon_data.get("nodes", {}).get(dungeon_data.get("current_node"), {}).get("next")
 
+    # Корректное обновление статистики
     home = fresh_user.get('home_data', {})
-    home['mobs_killed'] = home.get('mobs_killed', 0) + 1
-    track_stat(user_id, 'mobs_killed', 1)
+    stats = home.setdefault('stats', {})
+    
+    stats['mobs_killed'] = stats.get('mobs_killed', 0) + 1
     
     enemy_id = combat.get('enemy_id', '')
     if enemy_id:
-        track_stat(user_id, f"kills_{enemy_id}", 1)
+        stats[f"kills_{enemy_id}"] = stats.get(f"kills_{enemy_id}", 0) + 1
         
     if is_boss:
-        home['bosses_killed'] = home.get('bosses_killed', 0) + 1
-        track_stat(user_id, 'bosses_killed', 1)
+        stats['bosses_killed'] = stats.get('bosses_killed', 0) + 1
 
     add_quest_progress(user_id, "kill_mobs", 1)
 
@@ -132,6 +133,7 @@ async def handle_combat_victory(callback: CallbackQuery, user_id: int, combat: d
     elif is_boss and dungeon_data.get('dungeon_type') == 'event':
         add_global_event(f"💀 Игрок **{fresh_user['username']}** бросил вызов Боссу Дня и вышел победителем!")
 
+    # Единовременное сохранение всех данных, включая обновленную home_data
     update_user(
         user_id, state='STATE_DUNGEON', gold=fresh_user['gold'], gems=fresh_user.get('gems', 0),
         hp=fresh_user['hp'], max_hp=fresh_user['max_hp'], level=fresh_user['level'], xp=fresh_user['xp'],
