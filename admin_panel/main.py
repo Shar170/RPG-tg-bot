@@ -151,7 +151,7 @@ with st.sidebar:
 # ОСНОВНОЙ ИНТЕРФЕЙС ВКЛАДОК
 # ==========================================
 st.title("🛡️ Kamaria RPG — Панель Управления")
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "🦇 Бестиарий", 
     "👥 Игроки", 
     "🏰 Кланы",
@@ -159,7 +159,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "💻 SQL Запросы",
     "📊 Таблицы БД",
     "💾 Экспорт SQL",
-    "🏡 Скины Дома"
+    "🏡 Скины Дома",
+    "🎴 Коллекции"
 ])
 
 # --- ВКЛАДКА 1: БЕСТИАРИЙ ---
@@ -509,7 +510,10 @@ with tab6:
         "clans": "clan_id", 
         "alchemy_ingredients": "item_id", 
         "home_skins": "skin_id",
-        "war_regions": "region_id"
+        "war_regions": "region_id",
+        "card_sets": "set_id",
+        "cards": "card_id",
+        "loot_boxes": "box_id"
     }
     table_to_edit = st.selectbox("Таблица:", list(pks.keys()))
     df = fetch_table(table_to_edit)
@@ -547,7 +551,7 @@ with tab7:
                         continue
                     dump_lines.append(line)
                 elif export_mode.startswith("🛡️"):
-                    if line.startswith('INSERT INTO "users"') or line.startswith("INSERT INTO users"):
+                    if line.startswith('INSERT INTO "users"') or line.startswith("INSERT INTO users") or line.startswith("INSERT INTO user_"):
                         continue
                     dump_lines.append(line)
                 else:
@@ -621,4 +625,22 @@ with tab8:
                         st.error("Ошибка: Требования должны быть валидным JSON объектом!")
                     except Exception as e:
                         st.error(f"Произошла ошибка базы данных: {e}")
+
+# --- ВКЛАДКА 9: КОЛЛЕКЦИИ ---
+with tab9:
+    st.subheader("🎴 Коллекционные карточки и Лутбоксы")
+    st.markdown("Здесь вы можете посмотреть текущие наборы карточек и содержимое лутбоксов.")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**Наборы (Сеты) карточек:**")
+        st.dataframe(fetch_table("card_sets"), use_container_width=True)
+    with col2:
+        st.markdown("**Карточки:**")
+        st.dataframe(fetch_table("cards"), use_container_width=True)
+        
+    st.divider()
+    st.markdown("**Лутбоксы (Награды за сеты):**")
+    st.dataframe(fetch_table("loot_boxes"), use_container_width=True)
+    st.caption("Редактировать значения и добавлять новые коробки можно на вкладке «📊 Таблицы БД».")
 

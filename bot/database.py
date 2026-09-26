@@ -30,37 +30,32 @@ def init_db():
         except sqlite3.OperationalError: pass
         try: cursor.execute("ALTER TABLE clans ADD COLUMN chat_history TEXT DEFAULT '[]'")
         except sqlite3.OperationalError: pass
+        
+        # --- НОВЫЕ КОЛОНКИ ДЛЯ КАРТОЧЕК ---
+        try: cursor.execute("ALTER TABLE users ADD COLUMN dust INTEGER DEFAULT 0")
+        except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE users ADD COLUMN pity_counter INTEGER DEFAULT 0")
+        except sqlite3.OperationalError: pass
             
         cursor.execute('''CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY, username TEXT, state TEXT, hp INTEGER, max_hp INTEGER,
             gold INTEGER, inventory TEXT, home_data TEXT, combat_data TEXT, known_traits TEXT, dungeon_data TEXT,
             level INTEGER DEFAULT 1, xp INTEGER DEFAULT 0, clan_id INTEGER DEFAULT 0, gems INTEGER DEFAULT 0, 
             quests_data TEXT DEFAULT '{}', clan_role TEXT DEFAULT 'thrall', energy INTEGER DEFAULT 5, 
-            last_energy_time INTEGER DEFAULT 0, last_msg_id INTEGER DEFAULT 0, is_bot INTEGER DEFAULT 0)''')
+            last_energy_time INTEGER DEFAULT 0, last_msg_id INTEGER DEFAULT 0, is_bot INTEGER DEFAULT 0, 
+            dust INTEGER DEFAULT 0, pity_counter INTEGER DEFAULT 0)''')
             
         cursor.execute('''CREATE TABLE IF NOT EXISTS global_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, timestamp REAL)''')
             
         cursor.execute('''CREATE TABLE IF NOT EXISTS daily_dungeons (
-            day_index INTEGER PRIMARY KEY, name TEXT, desc TEXT, mobs TEXT, loot_id TEXT, loot_name TEXT, boss_id TEXT, mob_modifier REAL)''')
-            
-        try: cursor.execute("ALTER TABLE daily_dungeons ADD COLUMN min_rooms INTEGER DEFAULT 3")
-        except sqlite3.OperationalError: pass
-        try: cursor.execute("ALTER TABLE daily_dungeons ADD COLUMN max_rooms INTEGER DEFAULT 4")
-        except sqlite3.OperationalError: pass
-        try: cursor.execute("ALTER TABLE daily_dungeons ADD COLUMN room_weights TEXT DEFAULT '{\"combat\": 50, \"puzzle\": 20, \"treasure\": 15, \"empty\": 15}'")
-        except sqlite3.OperationalError: pass
+            day_index INTEGER PRIMARY KEY, name TEXT, desc TEXT, mobs TEXT, loot_id TEXT, loot_name TEXT, boss_id TEXT, mob_modifier REAL,
+            min_rooms INTEGER DEFAULT 3, max_rooms INTEGER DEFAULT 4, room_weights TEXT DEFAULT '{"combat": 50, "puzzle": 20, "treasure": 15, "empty": 15}')''')
         
         cursor.execute('''CREATE TABLE IF NOT EXISTS war_regions (
             region_id INTEGER PRIMARY KEY, name TEXT, desc TEXT, target_clears INTEGER DEFAULT 100000, 
-            current_clears INTEGER DEFAULT 0, is_liberated INTEGER DEFAULT 0, boss_id TEXT, mobs TEXT)''')
-            
-        try: cursor.execute("ALTER TABLE war_regions ADD COLUMN min_rooms INTEGER DEFAULT 4")
-        except sqlite3.OperationalError: pass
-        try: cursor.execute("ALTER TABLE war_regions ADD COLUMN max_rooms INTEGER DEFAULT 6")
-        except sqlite3.OperationalError: pass
-        try: cursor.execute("ALTER TABLE war_regions ADD COLUMN room_weights TEXT DEFAULT '{\"combat\": 60, \"puzzle\": 15, \"treasure\": 15, \"empty\": 10}'")
-        except sqlite3.OperationalError: pass
+            current_clears INTEGER DEFAULT 0, is_liberated INTEGER DEFAULT 0, boss_id TEXT, mobs TEXT,
+            min_rooms INTEGER DEFAULT 4, max_rooms INTEGER DEFAULT 6, room_weights TEXT DEFAULT '{"combat": 60, "puzzle": 15, "treasure": 15, "empty": 10}')''')
 
         cursor.execute('''CREATE TABLE IF NOT EXISTS solo_dungeons (
             id TEXT PRIMARY KEY, name TEXT, desc TEXT, mobs TEXT, boss_id TEXT, 
@@ -94,6 +89,20 @@ def init_db():
             
         cursor.execute('''CREATE TABLE IF NOT EXISTS home_skins (
             skin_id TEXT PRIMARY KEY, name TEXT, type TEXT, price INTEGER DEFAULT 0, requirements TEXT DEFAULT '{}', desc TEXT DEFAULT '')''')
+        
+        # --- ТАБЛИЦЫ КОЛЛЕКЦИОННЫХ КАРТОЧЕК И ЛУТБОКСОВ ---
+        cursor.execute('''CREATE TABLE IF NOT EXISTS card_sets (
+            set_id TEXT PRIMARY KEY, name TEXT, desc TEXT, rarity TEXT, reward_box_id TEXT, theme TEXT)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS cards (
+            card_id TEXT PRIMARY KEY, name TEXT, emoji TEXT, set_id TEXT, rarity_internal TEXT)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS user_cards (
+            user_id INTEGER, card_id TEXT, count INTEGER DEFAULT 0, first_at REAL, 
+            PRIMARY KEY(user_id, card_id))''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS loot_boxes (
+            box_id TEXT PRIMARY KEY, name TEXT, type TEXT, rarity TEXT, contents TEXT, min_level INTEGER, max_level INTEGER)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS user_boxes (
+            user_id INTEGER, box_id TEXT, count INTEGER DEFAULT 0, 
+            PRIMARY KEY(user_id, box_id))''')
             
         conn.commit()
 
@@ -114,8 +123,7 @@ def seed_bots():
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM users WHERE is_bot=1")
-        if cursor.fetchone()[0] > 0:
-            return
+        if cursor.fetchone()[0] > 0: return
 
         bot_clans = [("Орден Пепла", 3, 45), ("Тени Камарии", 4, 70), ("Стальные Волки", 2, 25)]
         clan_ids = []
@@ -125,7 +133,6 @@ def seed_bots():
             clan_ids.append(cursor.fetchone()[0])
 
         bot_names = ["Kaelthas", "ShadowStrike", "Grommash", "Leroy", "Arthas", "Illidan", "Sylvanas", "Rexxar", "Guldan", "Jaina", "Uther", "Thrall", "Varian", "Garrosh", "Malfurion"]
-        
         bot_base_id = 9000000
         for i, name in enumerate(bot_names):
             lvl = random.randint(10, 45)
@@ -147,11 +154,9 @@ def simulate_bot_activity():
     last_sim = float(get_setting("last_bot_sim", "0"))
     now = time.time()
     
-    if now - last_sim < 3600:
-        return
+    if now - last_sim < 3600: return
 
     events_to_add = []
-    
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT username, clan_id FROM users WHERE is_bot=1 ORDER BY RANDOM() LIMIT 3")
@@ -200,6 +205,49 @@ def seed_all():
             ("dungeon_mimic_chance", "0.15")
         ]
         cursor.executemany("INSERT OR REPLACE INTO game_settings VALUES (?, ?)", settings)
+        
+        # --- СИДИРОВАНИЕ КАРТОЧЕК И ЛУТБОКСОВ ---
+        sets_seed = [
+            ("set_veg", "Овощи", "Дары природы", "common", "box_common_mats", "forest"),
+            ("set_fruit", "Фрукты", "Сладкий урожай", "common", "box_common_mats", "forest"),
+            ("set_tools", "Инструменты", "Ремесленный набор", "common", "box_common_mats", "forge"),
+            ("set_food", "Еда", "Сытный пир", "uncommon", "box_uncommon_cards", "tavern"),
+            ("set_alch", "Алхимия", "Тайные знания", "uncommon", "box_uncommon_cards", "crypt"),
+            ("set_beasts", "Звери", "Дикая природа", "uncommon", "box_uncommon_cards", "forest"),
+            ("set_weap", "Оружие", "Арсенал героя", "rare", "box_rare_weapon", "forge"),
+            ("set_stars", "Светила", "Небесный свод", "rare", "box_rare_armor", "temple"),
+            ("set_dark", "Тьма", "Порождения бездны", "rare", "box_rare_weapon", "crypt"),
+            ("set_myth", "Мифические", "Легенды Камарии", "epic", "box_epic_mix", "temple"),
+            ("set_royal", "Королевские", "Символы власти", "epic", "box_epic_mix", "castle"),
+            ("set_anom", "Аномалии", "Искажения ткани мира", "legendary", "box_leg_mix", "abyss")
+        ]
+        cursor.executemany("INSERT OR REPLACE INTO card_sets VALUES (?, ?, ?, ?, ?, ?)", sets_seed)
+        
+        cards_seed = [
+            ("c_carrot", "Морковь", "🥕", "set_veg", "common"), ("c_tomato", "Томат", "🍅", "set_veg", "common"), ("c_broccoli", "Брокколи", "🥦", "set_veg", "common"), ("c_corn", "Кукуруза", "🌽", "set_veg", "common"), ("c_cucumber", "Огурец", "🥒", "set_veg", "common"), ("c_onion", "Лук", "🧅", "set_veg", "common"),
+            ("c_apple", "Яблоко", "🍎", "set_fruit", "common"), ("c_banana", "Банан", "🍌", "set_fruit", "common"), ("c_grape", "Виноград", "🍇", "set_fruit", "common"), ("c_strawb", "Клубника", "🍓", "set_fruit", "common"), ("c_peach", "Персик", "🍑", "set_fruit", "common"), ("c_cherry", "Вишня", "🍒", "set_fruit", "common"),
+            ("c_hammer", "Молоток", "🔨", "set_tools", "common"), ("c_axe_tool", "Топор", "🪓", "set_tools", "common"), ("c_wrench", "Ключ", "🔧", "set_tools", "common"), ("c_saw", "Пила", "🪚", "set_tools", "common"), ("c_toolbox", "Ящик", "🧰", "set_tools", "common"), ("c_pickaxe", "Кирка", "⛏", "set_tools", "common"),
+            ("c_meat", "Мясо на кости", "🍖", "set_food", "uncommon"), ("c_chicken", "Окорочок", "🍗", "set_food", "uncommon"), ("c_steak", "Стейк", "🥩", "set_food", "uncommon"), ("c_burger", "Бургер", "🍔", "set_food", "uncommon"), ("c_pizza", "Пицца", "🍕", "set_food", "uncommon"), ("c_sandw", "Сэндвич", "🥪", "set_food", "uncommon"),
+            ("c_alembic", "Перегонный куб", "⚗️", "set_alch", "uncommon"), ("c_flask", "Колба", "🧪", "set_alch", "uncommon"), ("c_crystal", "Шар", "🔮", "set_alch", "uncommon"), ("c_scroll", "Свиток", "📜", "set_alch", "uncommon"), ("c_candle", "Свеча", "🕯", "set_alch", "uncommon"), ("c_amulet", "Амулет", "🧿", "set_alch", "uncommon"),
+            ("c_wolf", "Волк", "🐺", "set_beasts", "uncommon"), ("c_fox", "Лиса", "🦊", "set_beasts", "uncommon"), ("c_bear", "Медведь", "🐻", "set_beasts", "uncommon"), ("c_boar", "Кабан", "🐗", "set_beasts", "uncommon"), ("c_deer", "Олень", "🦌", "set_beasts", "uncommon"), ("c_snake", "Змея", "🐍", "set_beasts", "uncommon"),
+            ("c_swords", "Скрещенные мечи", "⚔️", "set_weap", "rare"), ("c_dagger", "Кинжал", "🗡", "set_weap", "rare"), ("c_shield", "Щит", "🛡", "set_weap", "rare"), ("c_bow", "Лук", "🏹", "set_weap", "rare"), ("c_axe_weap", "Боевой топор", "🪓", "set_weap", "rare"), ("c_trident", "Трезубец", "🔱", "set_weap", "rare"),
+            ("c_sun", "Солнце", "☀️", "set_stars", "rare"), ("c_moon", "Месяц", "🌙", "set_stars", "rare"), ("c_star1", "Звезда", "⭐", "set_stars", "rare"), ("c_star2", "Сияние", "🌟", "set_stars", "rare"), ("c_star3", "Искры", "✨", "set_stars", "rare"), ("c_star4", "Метеорит", "💫", "set_stars", "rare"),
+            ("c_skull", "Череп", "💀", "set_dark", "rare"), ("c_ghost", "Призрак", "👻", "set_dark", "rare"), ("c_bat", "Летучая мышь", "🦇", "set_dark", "rare"), ("c_spider", "Паук", "🕷", "set_dark", "rare"), ("c_web", "Паутина", "🕸", "set_dark", "rare"), ("c_newmoon", "Новолуние", "🌑", "set_dark", "rare"),
+            ("c_dragon", "Дракон", "🐉", "set_myth", "epic"), ("c_unicorn", "Единорог", "🦄", "set_myth", "epic"), ("c_dragonhead", "Голова дракона", "🐲", "set_myth", "epic"), ("c_eagle", "Орел", "🦅", "set_myth", "epic"), ("c_fire", "Огонь", "🔥", "set_myth", "epic"), ("c_ice", "Лед", "❄", "set_myth", "epic"),
+            ("c_crown", "Корона", "👑", "set_royal", "epic"), ("c_gem", "Драгоценность", "💎", "set_royal", "epic"), ("c_trophy", "Кубок", "🏆", "set_royal", "epic"), ("c_medal", "Орден", "🎖", "set_royal", "epic"), ("c_gold_medal", "Медаль", "🥇", "set_royal", "epic"), ("c_fleur", "Лилия", "⚜", "set_royal", "epic"),
+            ("c_vortex", "Вихрь", "🌀", "set_anom", "legendary"), ("c_galaxy", "Галактика", "🌌", "set_anom", "legendary"), ("c_hole", "Дыра", "🕳", "set_anom", "legendary"), ("c_zap", "Разряд", "⚡", "set_anom", "legendary"), ("c_orb", "Сфера", "🔮", "set_anom", "legendary"), ("c_eye", "Око", "👁", "set_anom", "legendary")
+        ]
+        cursor.executemany("INSERT OR REPLACE INTO cards VALUES (?, ?, ?, ?, ?)", cards_seed)
+
+        boxes_seed = [
+            ("box_common_mats", "📦 Коробка Ингредиентов", "mats", "common", json.dumps({"count": 5, "gold": 300, "potions": 1}), 1, 100),
+            ("box_uncommon_cards", "🎴 Сундук Карточек", "cards", "uncommon", json.dumps({"count": 3}), 1, 100),
+            ("box_rare_weapon", "⚔️ Оружейный Ящик", "weapon", "rare", json.dumps({"count": 1, "gold": 1000}), 1, 100),
+            ("box_rare_armor", "🛡 Ящик Брони", "armor", "rare", json.dumps({"count": 1, "gold": 1000}), 1, 100),
+            ("box_epic_mix", "👑 Эпический Дар", "epic_mix", "epic", json.dumps({"equip_count": 2, "gold": 3000}), 1, 100),
+            ("box_leg_mix", "🌀 Аномальный Куб", "leg_mix", "legendary", json.dumps({"equip_count": 1, "gold": 7000, "gems": 10}), 1, 100)
+        ]
+        cursor.executemany("INSERT OR REPLACE INTO loot_boxes VALUES (?, ?, ?, ?, ?, ?, ?)", boxes_seed)
         
         skins = [
             ("base", "Базовый шатер", "free", 0, "{}", "Треск костра и запах дыма стелется по округе. Палатка и небольшая телега ютятся в лесу у подножья многолетнего дуба."),
@@ -822,3 +870,51 @@ def remove_from_queue(user_id: int):
     with get_connection() as conn:
         conn.cursor().execute("DELETE FROM arena_queue WHERE user_id = ?", (user_id,))
         conn.commit()
+
+# --- ВЫПАДЕНИЕ КАРТОЧЕК ---
+def roll_card(user_id: int, theme: str = None) -> dict:
+    """Генерирует карточку с учетом pity-ситуации и темы данжа."""
+    user = get_user(user_id)
+    pity = user.get('pity_counter', 0)
+    
+    if pity >= 30:
+        rarity = "epic"
+        update_user(user_id, pity_counter=0)
+    else:
+        update_user(user_id, pity_counter=pity + 1)
+        r = random.uniform(0, 100)
+        if r <= 2: rarity = "legendary"
+        elif r <= 7: rarity = "epic"
+        elif r <= 20: rarity = "rare"
+        elif r <= 45: rarity = "uncommon"
+        else: rarity = "common"
+        
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT set_id, theme FROM card_sets WHERE rarity=?", (rarity,))
+        sets = cur.fetchall()
+        
+        chosen_set = None
+        if theme:
+            theme_sets = [s[0] for s in sets if s[1] == theme]
+            if theme_sets and random.random() < 0.5:
+                chosen_set = random.choice(theme_sets)
+        
+        if not chosen_set:
+            chosen_set = random.choice([s[0] for s in sets])
+            
+        cur.execute("SELECT card_id, name, emoji FROM cards WHERE set_id=?", (chosen_set,))
+        cards = cur.fetchall()
+        if not cards: return None
+        
+        card = random.choice(cards)
+        
+        cur.execute("""
+            INSERT INTO user_cards (user_id, card_id, count, first_at) 
+            VALUES (?, ?, 1, ?) 
+            ON CONFLICT(user_id, card_id) DO UPDATE SET count = count + 1
+        """, (user_id, card[0], time.time()))
+        conn.commit()
+        
+        return {"card_id": card[0], "name": card[1], "emoji": card[2], "rarity": rarity}
+

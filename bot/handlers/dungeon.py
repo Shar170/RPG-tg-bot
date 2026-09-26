@@ -4,7 +4,8 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardBut
 from database import (
     get_user, update_user, consume_energy, get_today_dungeon,
     get_all_war_regions, get_all_solo_dungeons, get_solo_dungeon, 
-    get_scaled_mob, track_stat, get_energy_settings, apply_death_penalty, get_setting
+    get_scaled_mob, track_stat, get_energy_settings, apply_death_penalty, get_setting,
+    roll_card # Импортируем ролл карточки
 )
 from utils.generators import generate_dungeon_graph
 
@@ -267,10 +268,20 @@ async def enter_node(callback: CallbackQuery, user: dict, d_data: dict, node_id:
             user['gold'] += gold_find
             d_data.setdefault('gathered_gold', 0)
             d_data['gathered_gold'] += gold_find
+            
+            # --- ВЫПАДЕНИЕ КАРТОЧЕК В СУНДУКЕ ---
+            card_msg = ""
+            c1 = roll_card(user['user_id'])
+            if c1: card_msg += f"\n🎴 Найдена карточка: {c1['emoji']} {c1['name']} ({c1['rarity']})"
+            
+            if random.random() < 0.2:
+                c2 = roll_card(user['user_id'])
+                if c2: card_msg += f"\n🎴 Бонусная карточка: {c2['emoji']} {c2['name']} ({c2['rarity']})"
+            
             update_user(user['user_id'], gold=user['gold'], dungeon_data=d_data)
             text = (
                 f"📦 **Тайник в каменной нише!**\n\n"
-                f"Вы сорвали печать и забрали **+{gold_find} 🪙** золота!\n\n"
+                f"Вы сорвали печать и забрали **+{gold_find} 🪙** золота!{card_msg}\n\n"
                 "Выберите следующий поворот:"
             )
             await callback.message.edit_text(text, reply_markup=get_navigation_kb(d_data), parse_mode="Markdown")

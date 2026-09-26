@@ -5,7 +5,8 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardBut
 from database import (
     get_user, update_user, get_item, get_loot_table, get_item_name, get_setting,
     apply_flee_penalty, apply_death_penalty, add_quest_progress, get_clan, update_clan,
-    calculate_damage_received, progress_war_region, track_stat, add_global_event
+    calculate_damage_received, progress_war_region, track_stat, add_global_event,
+    roll_card # Импорт ролла
 )
 
 router = Router()
@@ -111,6 +112,13 @@ async def handle_combat_victory(callback: CallbackQuery, user_id: int, combat: d
                 dungeon_data["gathered_materials"][loot['item_id']] = dungeon_data["gathered_materials"].get(loot['item_id'], 0) + qty
             drop_msg += f"\n✨ Выбито: **{get_item_name(loot['item_id'])}** (x{qty})"
             dropped_count += 1
+
+    # --- ДРОП КАРТОЧЕК С БОССА ---
+    if is_boss:
+        c1 = roll_card(user_id)
+        c2 = roll_card(user_id)
+        if c1: drop_msg += f"\n🎴 Трофейная карточка: {c1['emoji']} {c1['name']} ({c1['rarity']})"
+        if c2: drop_msg += f"\n🎴 Трофейная карточка: {c2['emoji']} {c2['name']} ({c2['rarity']})"
 
     if dungeon_data.get('dungeon_type') == 'war' and is_boss:
         home, bonus_gems = progress_war_region(dungeon_data['war_region_id'], user_id, home_data=home)
@@ -515,3 +523,4 @@ async def combat_flee_cancel(callback: CallbackQuery):
         d_data = user.get('dungeon_data', {})
         from handlers.dungeon import get_navigation_kb
         await callback.message.edit_text("Вы передумали сбегать и продолжили путь.", reply_markup=get_navigation_kb(d_data), parse_mode="Markdown")
+

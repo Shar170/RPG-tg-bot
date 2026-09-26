@@ -155,6 +155,7 @@ async def cb_town_home(callback: CallbackQuery):
         InlineKeyboardButton(text="📜 Выбрать титул", callback_data="town_home_titles"),
         InlineKeyboardButton(text="🎖 Выбрать медаль", callback_data="town_home_medals")
     ])
+    buttons.append([InlineKeyboardButton(text="🃏 Альбом коллекционера", callback_data="collection_main")])
     buttons.append([InlineKeyboardButton(text="🎨 Настройки дома (Скины)", callback_data="town_home_settings")])
     buttons.append([InlineKeyboardButton(text="🔙 В лагерь", callback_data="town_back")])
     
