@@ -6,7 +6,7 @@ from database import (
     get_user, update_user, get_item, get_loot_table, get_item_name, get_setting,
     apply_flee_penalty, apply_death_penalty, add_quest_progress, get_clan, update_clan,
     calculate_damage_received, progress_war_region, track_stat, add_global_event,
-    roll_card
+    roll_card, log_event  # <--- Добавлен импорт логгера
 )
 
 router = Router()
@@ -211,6 +211,10 @@ async def combat_attack(callback: CallbackQuery):
             log_msg = f"💨 {enemy_name} увернулся от атаки!"
         else:
             enemy_hp -= dmg
+            
+            # ЛОГ: Нанесенный урон
+            log_event(user['user_id'], 'combat', 'damage_dealt', dmg, {'enemy': enemy_name, 'weapon_id': weapon_id})
+            
             log_msg = f"Вы нанесли {dmg} урона!"
             if extra_str > 0: log_msg += f" (Сила +{extra_str})"
             if combat.get('enemy_vuln', 0) > 0: log_msg += " (Уязвимость врага)"
@@ -219,8 +223,15 @@ async def combat_attack(callback: CallbackQuery):
             if enemy_hp > 0 and random.random() < mob_skills.get("counter", 0):
                 counter_dmg = int(dmg * 0.5)
                 user['hp'] -= counter_dmg
+                
+                # ЛОГ: Полученный урон от контратаки
+                log_event(user['user_id'], 'combat', 'damage_taken', -counter_dmg, {'enemy': enemy_name, 'source': 'counter'})
+                
                 log_msg += f"\n⚔️ Враг контратакует! (-{counter_dmg} ХП)"
                 if user['hp'] <= 0:
+                    # ЛОГ: Смерть
+                    log_event(user['user_id'], 'combat', 'death', 0, {'enemy': enemy_name, 'dungeon_type': user.get('dungeon_data', {}).get('dungeon_type')})
+                    
                     track_stat(user['user_id'], 'deaths_count', 1)
                     apply_death_penalty(user['user_id'], user.get('dungeon_data', {}))
                     update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
@@ -310,6 +321,10 @@ async def combat_end_turn(callback: CallbackQuery):
 
             monster_dmg = calculate_damage_received(raw_dmg, total_armor)
             user['hp'] -= monster_dmg
+            
+            # ЛОГ: Полученный урон от атаки
+            log_event(user['user_id'], 'combat', 'damage_taken', -monster_dmg, {'enemy': enemy_name, 'source': 'attack'})
+            
             log_parts.append(f"Враг ударил на {monster_dmg} урона.")
 
             if random.random() < mob_skills.get('poison', 0):
@@ -324,6 +339,9 @@ async def combat_end_turn(callback: CallbackQuery):
                 combat[attr] = 0
 
     if user['hp'] <= 0:
+        # ЛОГ: Смерть
+        log_event(user['user_id'], 'combat', 'death', 0, {'enemy': enemy_name, 'dungeon_type': user.get('dungeon_data', {}).get('dungeon_type')})
+        
         track_stat(user['user_id'], 'deaths_count', 1)
         apply_death_penalty(user['user_id'], user.get('dungeon_data', {}))
         update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
@@ -486,6 +504,9 @@ async def execute_drink_combat(callback: CallbackQuery):
         update_user(host['user_id'], combat_data=host['combat_data'])
 
     if user['hp'] <= 0:
+        # ЛОГ: Смерть от зелья
+        log_event(user['user_id'], 'combat', 'death', 0, {'enemy': enemy_name, 'source': 'potion_side_effect', 'potion': used_item})
+        
         track_stat(user['user_id'], 'deaths_count', 1)
         apply_death_penalty(user['user_id'], user.get('dungeon_data', {}))
         update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
@@ -510,6 +531,10 @@ async def combat_flee_confirm(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     track_stat(user['user_id'], 'flees_count', 1)
     lost_gold, lost_mats = apply_flee_penalty(user['user_id'], user.get('dungeon_data', {}))
+    
+    # ЛОГ: Побег и потеря золота
+    log_event(user['user_id'], 'combat', 'flee', -lost_gold, {'lost_mats': lost_mats})
+    
     update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
     from handlers.town import get_town_kb
     mats_str = f" и {', '.join(lost_mats)}" if lost_mats else ""
@@ -525,4 +550,3 @@ async def combat_flee_cancel(callback: CallbackQuery):
         d_data = user.get('dungeon_data', {})
         from handlers.dungeon import get_navigation_kb
         await callback.message.edit_text("Вы передумали сбегать и продолжили путь.", reply_markup=get_navigation_kb(d_data), parse_mode="Markdown")
-

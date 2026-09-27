@@ -8,7 +8,8 @@ from database import (
     get_user, update_user, get_clan, update_clan, 
     get_clan_by_name, get_all_clans_ranked, get_clan_members,
     get_connection, get_clan_creation_requirements, get_item_name,
-    get_clan_merchant_deals, get_item_price, get_item, get_all_home_skins
+    get_clan_merchant_deals, get_item_price, get_item, get_all_home_skins,
+    log_event  # <--- Добавлен импорт логгера
 )
 
 router = Router()
@@ -138,6 +139,15 @@ async def clan_create_name_input(message: Message, state: FSMContext):
     new_gems = max(0, user.get('gems', 0) - reqs["cost_gems"])
     new_gold = max(0, user.get('gold', 0) - reqs["cost_gold"])
     update_user(user['user_id'], gems=new_gems, gold=new_gold, clan_id=new_clan_id, clan_role='hedwing')
+    
+    # ЛОГ: Создание клана (потеря золота/кристаллов на основание)
+    log_event(user['user_id'], 'clan', 'create_clan', 0, {
+        'clan_id': new_clan_id,
+        'clan_name': name,
+        'cost_gems': reqs["cost_gems"],
+        'cost_gold': reqs["cost_gold"]
+    })
+    
     await state.clear()
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -402,6 +412,10 @@ async def clan_merchant_buy(callback: CallbackQuery):
         inv.setdefault("materials", {})[i_id] = inv.get("materials", {}).get(i_id, 0) + 1
         
     user['gold'] -= price
+    
+    # ЛОГ: Покупка у кланового торговца
+    log_event(user['user_id'], 'economy', 'clan_merchant_buy', -price, {'item_id': i_id})
+    
     update_user(user['user_id'], gold=user['gold'], inventory=inv)
     await callback.answer(f"Успешная покупка: {get_item_name(i_id)} за {price} 🪙", show_alert=True)
     await clan_merchant_view(callback)
@@ -409,7 +423,7 @@ async def clan_merchant_buy(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("c_merch_sell_"))
 async def clan_merchant_sell(callback: CallbackQuery):
     i_id = callback.data.replace("c_merch_sell_", "")
-    user = get_user(callback.from_user.id)
+    user = get_user(callback.fromuser.id)
     
     inv = user['inventory']
     has_item = False
@@ -432,6 +446,9 @@ async def clan_merchant_sell(callback: CallbackQuery):
         
     price = get_item_price(i_id)
     user['gold'] += price
+    
+    # ЛОГ: Продажа клановому торговцу
+    log_event(user['user_id'], 'economy', 'clan_merchant_sell', price, {'item_id': i_id})
     
     update_user(user['user_id'], gold=user['gold'], inventory=inv)
     await callback.answer(f"Успешно продано за {price} 🪙", show_alert=True)
@@ -502,6 +519,14 @@ async def clan_upgrade_do(callback: CallbackQuery):
     new_treasury = clan['treasury'] - req_gold
     
     update_clan(clan['clan_id'], level=cur_lvl + 1, treasury=new_treasury, clan_vault=json.dumps(vault, ensure_ascii=False))
+    
+    # ЛОГ: Улучшение клана
+    log_event(user['user_id'], 'clan', 'upgrade_clan', 0, {
+        'clan_id': clan['clan_id'],
+        'new_level': cur_lvl + 1,
+        'cost_gold': req_gold,
+        'cost_gems': req_gems
+    })
     
     await callback.answer(f"🎉 Клан достиг {cur_lvl + 1} уровня!", show_alert=True)
     await show_my_clan(callback, None)
@@ -652,6 +677,9 @@ async def process_donate_gold(message: Message, state: FSMContext):
     clan = get_clan(user['clan_id'])
     update_clan(clan['clan_id'], treasury=clan.get('treasury', 0) + amount)
     
+    # ЛОГ: Вклад в казну золотом
+    log_event(user['user_id'], 'clan', 'donate_gold', -amount, {'clan_id': clan['clan_id']})
+    
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 В казну", callback_data="clan_vault_view")]])
     await message.answer(f"✅ Вы успешно пожертвовали **{amount} 🪙** в казну клана!", reply_markup=kb, parse_mode="Markdown")
@@ -679,6 +707,9 @@ async def process_donate_gems(message: Message, state: FSMContext):
     vault = json.loads(vault_raw) if isinstance(vault_raw, str) else vault_raw
     vault['gems'] = vault.get('gems', 0) + amount
     update_clan(clan['clan_id'], clan_vault=json.dumps(vault, ensure_ascii=False))
+    
+    # ЛОГ: Вклад в казну кристаллами
+    log_event(user['user_id'], 'clan', 'donate_gems', -amount, {'clan_id': clan['clan_id']})
     
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 В казну", callback_data="clan_vault_view")]])
@@ -751,6 +782,9 @@ async def process_withdraw_gold(message: Message, state: FSMContext):
     user['gold'] += amount
     update_user(user['user_id'], gold=user['gold'])
 
+    # ЛОГ: Изъятие из казны золота
+    log_event(user['user_id'], 'clan', 'withdraw_gold', amount, {'clan_id': clan['clan_id']})
+
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 В казну", callback_data="clan_vault_view")]])
     await message.answer(f"✅ Вы забрали **{amount} 🪙** из казны!", reply_markup=kb, parse_mode="Markdown")
@@ -787,6 +821,9 @@ async def process_withdraw_gems(message: Message, state: FSMContext):
     
     user['gems'] = user.get('gems', 0) + amount
     update_user(user['user_id'], gems=user['gems'])
+
+    # ЛОГ: Изъятие из казны кристаллов
+    log_event(user['user_id'], 'clan', 'withdraw_gems', amount, {'clan_id': clan['clan_id']})
 
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 В казну", callback_data="clan_vault_view")]])
@@ -1033,4 +1070,3 @@ async def clan_disband_do(callback: CallbackQuery, state: FSMContext):
         
     await callback.answer("Клан был успешно распущен.", show_alert=True)
     await clan_main_menu(callback, state)
-

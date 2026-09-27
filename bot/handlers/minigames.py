@@ -4,7 +4,8 @@ from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from database import (
     get_user, update_user, consume_energy, get_energy_settings, track_stat,
-    get_minigame_settings, get_random_material_id, get_item_name, give_item, roll_card
+    get_minigame_settings, get_random_material_id, get_item_name, give_item, roll_card,
+    log_event  # <--- Добавлен импорт логгера
 )
 
 router = Router()
@@ -74,6 +75,9 @@ async def mine_play(callback: CallbackQuery):
     if not consume_energy(user['user_id'], cost):
         return await callback.answer(f"Недостаточно энергии (нужно {cost} ⚡)!", show_alert=True)
     
+    # ЛОГ: Вход в шахту
+    log_event(user['user_id'], 'minigame', 'mine_start', -cost, {'currency': 'energy'})
+    
     await callback.answer()
     
     pool = ["gold", "gold", "gold", "iron", "iron", "gem", "card", "empty", "bomb"]
@@ -139,6 +143,10 @@ async def mine_dig(callback: CallbackQuery):
     elif found == "gold":
         reward = random.randint(cfg['mine_gold_min'], cfg['mine_gold_max'])
         user['gold'] = user.get('gold', 0) + reward
+        
+        # ЛОГ: Найдено золото
+        log_event(user['user_id'], 'minigame', 'mine_win_gold', reward)
+        
         await callback.answer(f"🪙 Найдено {reward} золота!")
     elif found == "iron":
         mat_id = get_random_material_id()
@@ -148,6 +156,10 @@ async def mine_dig(callback: CallbackQuery):
     elif found == "gem":
         gem_amt = cfg['mine_gem_amount']
         user['gems'] = user.get('gems', 0) + gem_amt
+        
+        # ЛОГ: Найдены кристаллы
+        log_event(user['user_id'], 'minigame', 'mine_win_gems', gem_amt)
+        
         await callback.answer(f"💎 Вы откопали АЛМАЗ (+{gem_amt})!", show_alert=True)
     elif found == "card":
         c = roll_card(user['user_id'])
@@ -206,6 +218,10 @@ async def dice_play(callback: CallbackQuery):
     if not consume_energy(user['user_id'], cost): 
         return await callback.answer(f"Недостаточно энергии (нужно {cost} ⚡)!", show_alert=True)
     
+    # ЛОГ: Вход и ставка
+    log_event(user['user_id'], 'minigame', 'dice_start', -cost, {'currency': 'energy'})
+    log_event(user['user_id'], 'minigame', 'dice_bet', -bet, {'currency': 'gold'})
+    
     await callback.answer()
     
     user['gold'] = user.get('gold', 0) - bet
@@ -215,6 +231,10 @@ async def dice_play(callback: CallbackQuery):
     if p_roll > b_roll:
         user['gold'] += win_gold
         net_profit = win_gold - bet
+        
+        # ЛОГ: Выигрыш
+        log_event(user['user_id'], 'minigame', 'dice_win', win_gold, {'net_profit': net_profit})
+        
         msg = f"🎉 **Вы выиграли!** (+{net_profit} чистыми)"
         track_stat(user['user_id'], 'minigames_won', 1)
     elif p_roll == b_roll:
@@ -268,6 +288,9 @@ async def lock_play(callback: CallbackQuery):
     
     if not consume_energy(user['user_id'], cost): 
         return await callback.answer(f"Недостаточно энергии (нужно {cost} ⚡)!", show_alert=True)
+    
+    # ЛОГ: Вход во взлом
+    log_event(user['user_id'], 'minigame', 'lock_start', -cost, {'currency': 'energy'})
     
     await callback.answer()
     
@@ -341,10 +364,18 @@ async def lock_input(callback: CallbackQuery):
             if random.random() < cfg['lock_gem_chance'] and mult > 0.1:
                 gems_won = max(1, int(cfg['lock_gem_amount'] * mult))
                 user['gems'] = user.get('gems', 0) + gems_won
+                
+                # ЛОГ: Выигрыш алмазов во взломе
+                log_event(user['user_id'], 'minigame', 'lock_win_gems', gems_won, {'attempts': used})
+                
                 reward_text += f"💎 {gems_won} Алмазов\n"
             else:
                 gold_won = max(1, int(random.randint(cfg['lock_gold_min'], cfg['lock_gold_max']) * mult))
                 user['gold'] = user.get('gold', 0) + gold_won
+                
+                # ЛОГ: Выигрыш золота во взломе
+                log_event(user['user_id'], 'minigame', 'lock_win_gold', gold_won, {'attempts': used})
+                
                 reward_text += f"💰 {gold_won} Золота\n"
 
             if used <= 5:
@@ -413,6 +444,9 @@ async def fish_play(callback: CallbackQuery):
     
     if not consume_energy(user['user_id'], cost):
         return await callback.answer(f"Недостаточно энергии (нужно {cost} ⚡)!", show_alert=True)
+    
+    # ЛОГ: Вход в рыбалку
+    log_event(user['user_id'], 'minigame', 'fish_start', -cost, {'currency': 'energy'})
     
     await callback.answer()
     
@@ -488,6 +522,10 @@ async def fish_catch(callback: CallbackQuery):
         
         gold_reward = random.randint(cfg['fish_gold_min'] // 2, cfg['fish_gold_max'] // 2)
         user['gold'] = user.get('gold', 0) + gold_reward
+        
+        # ЛОГ: Средний улов золота в рыбалке
+        log_event(user['user_id'], 'minigame', 'fish_win_gold', gold_reward, {'tension': tension})
+        
         update_user(user['user_id'], gold=user['gold'], home_data=home)
         
         msg = "Вы подсекли и вытащили **Озерную форель**!"
@@ -501,11 +539,19 @@ async def fish_catch(callback: CallbackQuery):
             gems_won = cfg['fish_gem_amount']
             user['gems'] = user.get('gems', 0) + gems_won
             currency_reward_text = f"💎 Алмазы: **+{gems_won} 💎** *(Удача!)*"
+            
+            # ЛОГ: Максимальный улов алмазов в рыбалке
+            log_event(user['user_id'], 'minigame', 'fish_win_gems', gems_won, {'tension': tension})
+            
             update_user(user['user_id'], gems=user['gems'], home_data=home)
         else:
             gold_reward = random.randint(cfg['fish_gold_min'], cfg['fish_gold_max'])
             user['gold'] = user.get('gold', 0) + gold_reward
             currency_reward_text = f"🪙 Золото: **+{gold_reward} 🪙**"
+            
+            # ЛОГ: Максимальный улов золота в рыбалке
+            log_event(user['user_id'], 'minigame', 'fish_win_gold', gold_reward, {'tension': tension})
+            
             update_user(user['user_id'], gold=user['gold'], home_data=home)
             
         msg = "Вы мастерски вытащили **Затопленный сундук сокровищ**!"
@@ -519,4 +565,3 @@ async def fish_catch(callback: CallbackQuery):
         [InlineKeyboardButton(text="🔙 В таверну", callback_data="town_tavern")]
     ])
     await callback.message.edit_text(f"🎣 **Результат рыбалки (Натяжение: {tension}%)**\n\n{msg}{reward}", reply_markup=kb, parse_mode="Markdown")
-

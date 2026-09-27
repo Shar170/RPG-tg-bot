@@ -2,7 +2,7 @@ import asyncio
 from aiogram import Bot, Dispatcher, BaseMiddleware, F
 from aiogram.types import TelegramObject, CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
 from config import BOT_TOKEN
-from database import init_db, seed_all, get_user, update_user, check_and_notify_regen, check_inactivity_notifications, mark_user_active
+from database import init_db, seed_all, get_user, update_user, check_and_notify_regen, check_inactivity_notifications, mark_user_active, flush_logs
 
 # ИМПОРТИРУЕМ ВСЕ ХЕНДЛЕРЫ, включая новый admin
 from handlers import town, dungeon, combat, alchemy, inventory, craft, minigames, market, arena, collection, trading_post, admin
@@ -57,6 +57,9 @@ async def regen_notifier_worker(bot: Bot):
     while True:
         await asyncio.sleep(60) 
         try:
+            # Сбрасываем буфер аналитики в базу каждую минуту
+            flush_logs()
+            
             # 1. Рассылка пушей о здоровье и энергии
             notifications = check_and_notify_regen()
             for notif in notifications:
@@ -138,4 +141,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-

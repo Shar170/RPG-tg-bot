@@ -124,6 +124,15 @@ def init_db():
             tx_id INTEGER PRIMARY KEY AUTOINCREMENT, seller_id INTEGER, buyer_id INTEGER,
             item_id TEXT, price INTEGER, tax_paid INTEGER, timestamp REAL)''')
             
+        cursor.execute('''CREATE TABLE IF NOT EXISTS analytics_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            timestamp REAL, 
+            user_id INTEGER, 
+            event_category TEXT, 
+            event_type TEXT, 
+            value_change INTEGER, 
+            metadata TEXT)''')
+            
         conn.commit()
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ МИНИ-ИГР ---
@@ -1032,12 +1041,30 @@ def check_and_generate_quests(user_id):
     today = datetime.datetime.today().strftime('%Y-%m-%d')
     if quests_data.get("date") != today:
         categories = [
-            [{"type": "kill_mobs", "desc": "Убить 5 монстров", "target": 5}],
-            [{"type": "raid_success", "desc": "Зачистить 1 подземелье", "target": 1}]
+            [
+                {"type": "kill_mobs", "desc": "Убить 5 монстров", "target": 5},
+                {"type": "kill_mobs", "desc": "Убить 10 монстров", "target": 10},
+                {"type": "kill_mobs", "desc": "Убить 15 монстров", "target": 15}
+            ],
+            [
+                {"type": "raid_success", "desc": "Зачистить 1 подземелье", "target": 1},
+                {"type": "raid_success", "desc": "Зачистить 3 подземелья", "target": 3}
+            ],
+            [
+                {"type": "craft_weapon", "desc": "Скрафтить оружие", "target": 1},
+                {"type": "craft_armor", "desc": "Скрафтить броню", "target": 1},
+                {"type": "craft_potion", "desc": "Приготовить 1 зелье", "target": 1},
+                {"type": "complete_card_set", "desc": "Собрать 1 коллекцию карточек", "target": 1}
+            ]
         ]
         selected = [random.choice(cat) for cat in categories]
-        for q in selected: q["progress"] = 0; q["completed"] = False
-        quests_data = {"date": today, "quests": selected, "claimed": False}
+        quests = []
+        for q in selected:
+            new_q = q.copy()
+            new_q["progress"] = 0
+            new_q["completed"] = False
+            quests.append(new_q)
+        quests_data = {"date": today, "quests": quests, "claimed": False}
         update_user(user_id, quests_data=quests_data)
     return quests_data
 
@@ -1199,4 +1226,31 @@ def roll_card(user_id: int, theme: str = None) -> dict:
         conn.commit()
         
         return {"card_id": card[0], "name": card[1], "emoji": card[2], "rarity": rarity}
+
+# --- ДОБАВЛЕННЫЕ ФУНКЦИИ ЛОГИРОВАНИЯ ---
+_analytics_buffer = []
+
+def log_event(user_id: int, category: str, event_type: str, value: int = 0, meta: dict = None):
+    global _analytics_buffer
+    if meta is None: meta = {}
+    _analytics_buffer.append((
+        time.time(), user_id, category, event_type, value, json.dumps(meta, ensure_ascii=False)
+    ))
+    
+    if len(_analytics_buffer) >= 50:
+        flush_logs()
+
+def flush_logs():
+    global _analytics_buffer
+    if not _analytics_buffer: return
+    
+    logs_to_write = _analytics_buffer[:]
+    _analytics_buffer.clear()
+    
+    with get_connection() as conn:
+        conn.cursor().executemany('''
+            INSERT INTO analytics_logs (timestamp, user_id, event_category, event_type, value_change, metadata) 
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', logs_to_write)
+        conn.commit()
 

@@ -13,7 +13,7 @@ st.set_page_config(page_title="Kamaria RPG Admin", layout="wide", page_icon="�
 # ==========================================
 # 🔒 АВТОРИЗАЦИЯ
 # ==========================================
-ADMIN_PASSWORD = "super_secret_password_123"  # <-- ВПИШИ СЮДА СВОЙ НАДЕЖНЫЙ ПАРОЛЬ
+ADMIN_PASSWORD = "gargon900"  # <-- ВПИШИ СЮДА СВОЙ НАДЕЖНЫЙ ПАРОЛЬ
 
 if 'authenticated' not in st.session_state:
     st.session_state['authenticated'] = False
@@ -151,7 +151,7 @@ with st.sidebar:
 # ОСНОВНОЙ ИНТЕРФЕЙС ВКЛАДОК
 # ==========================================
 st.title("🛡️ Kamaria RPG — Панель Управления")
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
     "🦇 Бестиарий", 
     "👥 Игроки", 
     "🏰 Кланы",
@@ -160,7 +160,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "📊 Таблицы БД",
     "💾 Экспорт SQL",
     "🏡 Скины Дома",
-    "🎴 Коллекции"
+    "🎴 Коллекции",
+    "📈 Аналитика"
 ])
 
 # --- ВКЛАДКА 1: БЕСТИАРИЙ ---
@@ -643,4 +644,70 @@ with tab9:
     st.markdown("**Лутбоксы (Награды за сеты):**")
     st.dataframe(fetch_table("loot_boxes"), use_container_width=True)
     st.caption("Редактировать значения и добавлять новые коробки можно на вкладке «📊 Таблицы БД».")
+
+# --- ВКЛАДКА 10: АНАЛИТИКА И ЛОГИ ---
+with tab10:
+    st.subheader("📈 Логи игровых событий и аналитика")
+    st.markdown("Здесь отображаются данные из таблицы `analytics_logs` для анализа экономики, боевки и прогрессии.")
+    
+    try:
+        logs_df = fetch_table("analytics_logs")
+        if not logs_df.empty:
+            # Преобразуем UNIX timestamp в читаемый формат времени
+            logs_df['Время'] = pd.to_datetime(logs_df['timestamp'], unit='s')
+            # Сортируем от новых к старым
+            logs_df = logs_df.sort_values(by='timestamp', ascending=False)
+            
+            # --- Блок фильтров ---
+            st.markdown("### 🔍 Фильтры")
+            col_f1, col_f2, col_f3 = st.columns(3)
+            
+            # Фильтр по категориям
+            all_cats = logs_df['event_category'].dropna().unique().tolist()
+            selected_cats = col_f1.multiselect("Категория (event_category):", all_cats, default=all_cats)
+            
+            # Фильтр по ID игрока
+            search_uid = col_f2.text_input("ID игрока (user_id):", placeholder="Например: 12345678")
+            
+            # Фильтр по типу события
+            search_event = col_f3.text_input("Тип события (event_type):", placeholder="Например: damage_dealt")
+            
+            # Применение фильтров
+            filtered_df = logs_df[logs_df['event_category'].isin(selected_cats)]
+            
+            if search_uid.strip().isdigit():
+                filtered_df = filtered_df[filtered_df['user_id'] == int(search_uid.strip())]
+                
+            if search_event.strip():
+                filtered_df = filtered_df[filtered_df['event_type'].str.contains(search_event.strip(), case=False, na=False)]
+            
+            # --- Вывод метрик ---
+            st.markdown("### 📊 Сводка (по отфильтрованным данным)")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Всего записей", f"{len(filtered_df):,}")
+            m2.metric("Уникальных игроков", f"{filtered_df['user_id'].nunique():,}")
+            
+            # Считаем баланс только для экономических событий
+            eco_df = filtered_df[filtered_df['event_category'] == 'economy']
+            m3.metric("Эмиссия/Трата золота", f"{int(eco_df['value_change'].sum()):,} 🪙")
+            
+            # Считаем потраченную энергию
+            energy_df = filtered_df[filtered_df['metadata'].str.contains('"currency": "energy"', na=False)]
+            m4.metric("Потрачено энергии", f"{int(energy_df['value_change'].sum()):,} ⚡")
+            
+            st.divider()
+            
+            # --- Вывод таблицы ---
+            # Оставляем только нужные колонки и задаем красивый порядок
+            display_df = filtered_df[['id', 'Время', 'user_id', 'event_category', 'event_type', 'value_change', 'metadata']]
+            st.dataframe(display_df, use_container_width=True, height=600)
+            
+            # Кнопка выгрузки текущего среза
+            csv_data = display_df.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Скачать этот лог (CSV)", data=csv_data, file_name="analytics_filtered.csv", mime="text/csv")
+            
+        else:
+            st.info("Таблица логов пока пуста. Подождите, пока игроки совершат действия.")
+    except Exception as e:
+        st.warning(f"Таблица analytics_logs еще не создана или произошла ошибка: {e}\n\nУбедитесь, что вы загрузили обновленный `database.py` и бот уже успел записать хотя бы один лог.")
 

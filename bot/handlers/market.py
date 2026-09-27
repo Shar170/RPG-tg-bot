@@ -2,7 +2,7 @@ import json
 from collections import Counter
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from database import get_user, update_user, get_item, get_item_name, get_item_price, get_connection, get_clan
+from database import get_user, update_user, get_item, get_item_name, get_item_price, get_connection, get_clan, log_event
 
 router = Router()
 
@@ -94,6 +94,9 @@ async def market_sell_all_loot(callback: CallbackQuery):
     user['gold'] += profit
     update_user(user['user_id'], gold=user['gold'], inventory=inv)
     
+    # ЛОГ: Массовая продажа лута
+    log_event(user['user_id'], 'economy', 'market_sell_all', profit, {'items_sold': count_sold})
+    
     await callback.answer(f"✅ Продано {count_sold} предметов!\nПолучено: {profit} 🪙", show_alert=True)
     await open_market(callback)
 
@@ -119,6 +122,10 @@ async def market_buy_do(callback: CallbackQuery):
     else: inv.setdefault("materials", {})[item_id] = inv.get("materials", {}).get(item_id, 0) + 1
         
     update_user(user['user_id'], gold=user['gold'], inventory=inv)
+    
+    # ЛОГ: Покупка предмета
+    log_event(user['user_id'], 'economy', 'market_buy', -price, {'item_id': item_id, 'category': item['type']})
+    
     await callback.answer(f"✅ Вы купили: {item['name']} за {price} 🪙", show_alert=True)
     
     # ИСПРАВЛЕНО: Передаем категорию через аргумент, а не переписываем замороженный объект
@@ -218,6 +225,10 @@ async def market_sell_loot_do(callback: CallbackQuery):
     user['gold'] += total_profit
     inv['materials'] = materials
     update_user(user['user_id'], gold=user['gold'], inventory=inv)
+    
+    # ЛОГ: Ручная продажа ресурса
+    log_event(user['user_id'], 'economy', 'market_sell_item', total_profit, {'item_id': mat_id, 'amount': amount})
+    
     await callback.answer(f"Продано {amount} шт. за {total_profit} 🪙!", show_alert=True)
     await market_sell_loot(callback)
 
@@ -265,6 +276,10 @@ async def market_sell_equip_do(callback: CallbackQuery):
     inv['backpack'] = backpack
     
     update_user(user['user_id'], gold=user['gold'], inventory=inv)
+    
+    # ЛОГ: Ручная продажа снаряжения
+    log_event(user['user_id'], 'economy', 'market_sell_equip', price, {'item_id': item_id})
+    
     await callback.answer(f"Продано: {item_data['name']} за {price} 🪙", show_alert=True)
     await market_sell_equip(callback)
 

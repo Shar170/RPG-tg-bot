@@ -5,7 +5,7 @@ from database import (
     get_user, update_user, consume_energy, get_today_dungeon,
     get_all_war_regions, get_all_solo_dungeons, get_solo_dungeon, 
     get_scaled_mob, track_stat, get_energy_settings, apply_death_penalty, get_setting,
-    roll_card # Импортируем ролл карточки
+    roll_card, log_event # <--- Добавлен импорт логгера
 )
 from utils.generators import generate_dungeon_graph
 
@@ -85,6 +85,9 @@ async def enter_solo_dungeon(callback: CallbackQuery):
     if not consume_energy(user['user_id'], cost):
         return await callback.answer(f"Недостаточно энергии (нужно {cost} ⚡)!", show_alert=True)
         
+    # ЛОГ: Вход в соло-данж (трата энергии)
+    log_event(user['user_id'], 'progression', 'dungeon_start_solo', -cost, {'dungeon_id': d_id, 'currency': 'energy'})
+        
     dungeon = get_solo_dungeon(d_id)
     if not dungeon:
         return await callback.answer("Подземелье не найдено!", show_alert=True)
@@ -113,6 +116,9 @@ async def start_event_dungeon(callback: CallbackQuery):
 
     if not consume_energy(user['user_id'], cost):
         return await callback.answer(f"Недостаточно энергии (нужно {cost} ⚡)!", show_alert=True)
+
+    # ЛОГ: Вход в ежедневный данж (трата энергии)
+    log_event(user['user_id'], 'progression', 'dungeon_start_event', -cost, {'currency': 'energy'})
 
     d_data = generate_dungeon_graph(
         dungeon_type="event", 
@@ -157,6 +163,9 @@ async def enter_war_region(callback: CallbackQuery):
 
     if not consume_energy(user['user_id'], cost):
         return await callback.answer(f"Недостаточно энергии (нужно {cost} ⚡)!", show_alert=True)
+
+    # ЛОГ: Вход в войну (трата энергии)
+    log_event(user['user_id'], 'progression', 'dungeon_start_war', -cost, {'region_id': reg_id, 'currency': 'energy'})
 
     regions = get_all_war_regions()
     region = next((r for r in regions if r['id'] == reg_id), None)
@@ -269,6 +278,9 @@ async def enter_node(callback: CallbackQuery, user: dict, d_data: dict, node_id:
             d_data.setdefault('gathered_gold', 0)
             d_data['gathered_gold'] += gold_find
             
+            # ЛОГ: Золото из сундука
+            log_event(user['user_id'], 'economy', 'dungeon_treasure_gold', gold_find)
+            
             # --- ВЫПАДЕНИЕ КАРТОЧЕК В СУНДУКЕ ---
             card_msg = ""
             c1 = roll_card(user['user_id'])
@@ -346,6 +358,10 @@ async def trap_dodge(callback: CallbackQuery):
     else:
         dmg = int(user.get('max_hp', 100) * random.uniform(0.15, 0.25))
         user['hp'] -= dmg
+        
+        # ЛОГ: Урон от ловушки
+        log_event(user['user_id'], 'dungeon', 'trap_damage', -dmg)
+        
         if user['hp'] <= 0:
             track_stat(user['user_id'], 'deaths_count', 1)
             apply_death_penalty(user['user_id'], d_data)
@@ -366,6 +382,10 @@ async def riddle_correct(callback: CallbackQuery):
     user['gold'] += reward
     d_data.setdefault('gathered_gold', 0)
     d_data['gathered_gold'] += reward
+    
+    # ЛОГ: Золото за решение загадки
+    log_event(user['user_id'], 'economy', 'dungeon_puzzle_win', reward)
+    
     update_user(user['user_id'], gold=user['gold'], dungeon_data=d_data)
     text = f"✨ **Загадка решена верно! Стела сдвинулась!**\nВы открыли скрытый тайник и получили **+{reward} 🪙** золота."
     await callback.message.edit_text(text, reply_markup=get_navigation_kb(d_data), parse_mode="Markdown")
@@ -377,6 +397,10 @@ async def riddle_wrong(callback: CallbackQuery):
     d_data = user.get('dungeon_data', {})
     trap_dmg = 15
     user['hp'] = max(1, user['hp'] - trap_dmg)
+    
+    # ЛОГ: Урон за неверную загадку
+    log_event(user['user_id'], 'dungeon', 'puzzle_fail_damage', -trap_dmg)
+    
     update_user(user['user_id'], hp=user['hp'])
     text = f"⚡ **Неверный ответ! Сработала руна защиты!**\nЛовушка нанесла **-{trap_dmg} ХП** урона."
     await callback.message.edit_text(text, reply_markup=get_navigation_kb(d_data), parse_mode="Markdown")
