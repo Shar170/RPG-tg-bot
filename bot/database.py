@@ -31,14 +31,22 @@ def init_db():
         try: cursor.execute("ALTER TABLE clans ADD COLUMN chat_history TEXT DEFAULT '[]'")
         except sqlite3.OperationalError: pass
         
-        # --- НОВЫЕ КОЛОНКИ ДЛЯ КАРТОЧЕК ---
         try: cursor.execute("ALTER TABLE users ADD COLUMN dust INTEGER DEFAULT 0")
         except sqlite3.OperationalError: pass
         try: cursor.execute("ALTER TABLE users ADD COLUMN pity_counter INTEGER DEFAULT 0")
         except sqlite3.OperationalError: pass
-        
-        # --- НОВЫЕ КОЛОНКИ ДЛЯ РЕГЕНЕРАЦИИ ЗДОРОВЬЯ ---
         try: cursor.execute("ALTER TABLE users ADD COLUMN last_hp_time INTEGER DEFAULT 0")
+        except sqlite3.OperationalError: pass
+        
+        try: cursor.execute("ALTER TABLE users ADD COLUMN notified_hp INTEGER DEFAULT 0")
+        except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE users ADD COLUMN notified_energy INTEGER DEFAULT 0")
+        except sqlite3.OperationalError: pass
+        
+        # --- Колонки для онлайна ---
+        try: cursor.execute("ALTER TABLE users ADD COLUMN last_active_time REAL DEFAULT 0")
+        except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE users ADD COLUMN reengagement_stage INTEGER DEFAULT 0")
         except sqlite3.OperationalError: pass
             
         cursor.execute('''CREATE TABLE IF NOT EXISTS users (
@@ -47,7 +55,9 @@ def init_db():
             level INTEGER DEFAULT 1, xp INTEGER DEFAULT 0, clan_id INTEGER DEFAULT 0, gems INTEGER DEFAULT 0, 
             quests_data TEXT DEFAULT '{}', clan_role TEXT DEFAULT 'thrall', energy INTEGER DEFAULT 5, 
             last_energy_time INTEGER DEFAULT 0, last_msg_id INTEGER DEFAULT 0, is_bot INTEGER DEFAULT 0, 
-            dust INTEGER DEFAULT 0, pity_counter INTEGER DEFAULT 0, last_hp_time INTEGER DEFAULT 0)''')
+            dust INTEGER DEFAULT 0, pity_counter INTEGER DEFAULT 0, last_hp_time INTEGER DEFAULT 0,
+            notified_hp INTEGER DEFAULT 0, notified_energy INTEGER DEFAULT 0,
+            last_active_time REAL DEFAULT 0, reengagement_stage INTEGER DEFAULT 0)''')
             
         cursor.execute('''CREATE TABLE IF NOT EXISTS global_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, timestamp REAL)''')
@@ -94,7 +104,6 @@ def init_db():
         cursor.execute('''CREATE TABLE IF NOT EXISTS home_skins (
             skin_id TEXT PRIMARY KEY, name TEXT, type TEXT, price INTEGER DEFAULT 0, requirements TEXT DEFAULT '{}', desc TEXT DEFAULT '')''')
         
-        # --- ТАБЛИЦЫ КОЛЛЕКЦИОННЫХ КАРТОЧЕК И ЛУТБОКСОВ ---
         cursor.execute('''CREATE TABLE IF NOT EXISTS card_sets (
             set_id TEXT PRIMARY KEY, name TEXT, desc TEXT, rarity TEXT, reward_box_id TEXT, theme TEXT)''')
         cursor.execute('''CREATE TABLE IF NOT EXISTS cards (
@@ -108,7 +117,6 @@ def init_db():
             user_id INTEGER, box_id TEXT, count INTEGER DEFAULT 0, 
             PRIMARY KEY(user_id, box_id))''')
 
-        # --- ТАБЛИЦЫ ДЛЯ БАРАХОЛКИ (ТП) ---
         cursor.execute('''CREATE TABLE IF NOT EXISTS trading_post (
             lot_id INTEGER PRIMARY KEY AUTOINCREMENT, seller_id INTEGER, item_id TEXT, 
             item_type TEXT, price INTEGER, created_at REAL, expires_at REAL, is_bot INTEGER DEFAULT 0)''')
@@ -117,6 +125,145 @@ def init_db():
             item_id TEXT, price INTEGER, tax_paid INTEGER, timestamp REAL)''')
             
         conn.commit()
+
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ МИНИ-ИГР ---
+def get_minigame_settings() -> dict:
+    return {
+        "fish_gold_min": int(get_setting("mg_fish_gold_min", "70")),
+        "fish_gold_max": int(get_setting("mg_fish_gold_max", "120")),
+        "fish_gem_chance": float(get_setting("mg_fish_gem_chance", "0.10")),
+        "fish_gem_amount": int(get_setting("mg_fish_gem_amount", "1")),
+        
+        "mine_gold_min": int(get_setting("mg_mine_gold_min", "35")),
+        "mine_gold_max": int(get_setting("mg_mine_gold_max", "65")),
+        "mine_gem_amount": int(get_setting("mg_mine_gem_amount", "1")),
+        
+        "dice_bet": int(get_setting("mg_dice_bet", "50")),
+        "dice_win_gold": int(get_setting("mg_dice_win_gold", "130")),
+        
+        "lock_gold_min": int(get_setting("mg_lock_gold_min", "150")),
+        "lock_gold_max": int(get_setting("mg_lock_gold_max", "250")),
+        "lock_gem_chance": float(get_setting("mg_lock_gem_chance", "0.15")),
+        "lock_gem_amount": int(get_setting("mg_lock_gem_amount", "1")),
+    }
+
+def get_random_material_id() -> str:
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT item_id FROM alchemy_ingredients")
+        rows = cursor.fetchall()
+        pool = [r[0] for r in rows] if rows else []
+        pool.append("iron_ingot")
+        if pool:
+            return random.choice(pool)
+    return "iron_ingot"
+
+# --- ФУНКЦИИ ОНЛАЙНА ---
+def mark_user_active(user_id: int):
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET last_active_time = ?, reengagement_stage = 0 WHERE user_id = ?", (time.time(), user_id))
+        conn.commit()
+
+def get_online_users(minutes: int = 15) -> tuple[int, list]:
+    threshold = time.time() - (minutes * 60)
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT username FROM users WHERE is_bot=0 AND last_active_time >= ?", (threshold,))
+        rows = cursor.fetchall()
+        names = [r[0] for r in rows]
+        return len(names), names
+
+def check_inactivity_notifications() -> list:
+    notifications = []
+    now = time.time()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, last_active_time, reengagement_stage FROM users WHERE is_bot=0")
+        for u_id, last_time, stage in cursor.fetchall():
+            if last_time == 0: continue 
+            days_inactive = (now - last_time) / 86400.0
+            new_stage = stage
+            
+            if days_inactive >= 31 and stage < 4:
+                new_stage = 4
+                notifications.append({"user_id": u_id, "days": 31})
+            elif days_inactive >= 17 and stage < 3:
+                new_stage = 3
+                notifications.append({"user_id": u_id, "days": 17})
+            elif days_inactive >= 5 and stage < 2:
+                new_stage = 2
+                notifications.append({"user_id": u_id, "days": 5})
+            elif days_inactive >= 2 and stage < 1:
+                new_stage = 1
+                notifications.append({"user_id": u_id, "days": 2})
+                
+            if new_stage != stage:
+                cursor.execute("UPDATE users SET reengagement_stage = ? WHERE user_id = ?", (new_stage, u_id))
+        conn.commit()
+    return notifications
+
+def check_and_notify_regen() -> list:
+    notifications = []
+    now = int(time.time())
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT key, value FROM game_settings WHERE key IN ('max_energy', 'energy_regen_seconds')")
+        s_dict = {row[0]: row[1] for row in cursor.fetchall()}
+        base_max_e = int(s_dict.get("max_energy", "5"))
+        regen_sec_e = int(s_dict.get("energy_regen_seconds", "7200"))
+        
+        cursor.execute("SELECT user_id, hp, max_hp, last_hp_time, energy, level, last_energy_time, notified_hp, notified_energy, state FROM users WHERE is_bot=0")
+        users = cursor.fetchall()
+        
+        for u in users:
+            u_id, hp, max_hp, last_hp_time, energy, lvl, last_e_time, notif_hp, notif_e, state = u
+            needs_update = False
+            max_e = base_max_e + max(0, lvl // 20)
+            
+            if hp < max_hp and notif_hp == 1:
+                notif_hp = 0
+                needs_update = True
+            if energy < max_e and notif_e == 1:
+                notif_e = 0
+                needs_update = True
+                
+            if state == 'STATE_TOWN' and hp < max_hp and last_hp_time > 0:
+                time_passed = now - last_hp_time
+                regen_interval = 60
+                regen_amount = max(1, int(max_hp * 0.05))
+                if time_passed >= regen_interval:
+                    cycles = time_passed // regen_interval
+                    hp = min(max_hp, hp + (cycles * regen_amount))
+                    last_hp_time = last_hp_time + (cycles * regen_interval)
+                    needs_update = True
+                    
+            if hp >= max_hp and notif_hp == 0:
+                notifications.append({"user_id": u_id, "type": "hp"})
+                notif_hp = 1
+                needs_update = True
+
+            if energy < max_e and last_e_time > 0:
+                time_passed = now - last_e_time
+                if time_passed >= regen_sec_e:
+                    cycles = time_passed // regen_sec_e
+                    energy = min(max_e, energy + cycles)
+                    last_e_time = last_e_time + (cycles * regen_sec_e)
+                    needs_update = True
+                    
+            if energy >= max_e and notif_e == 0:
+                notifications.append({"user_id": u_id, "type": "energy"})
+                notif_e = 1
+                needs_update = True
+                
+            if needs_update:
+                cursor.execute(
+                    "UPDATE users SET hp=?, last_hp_time=?, energy=?, last_energy_time=?, notified_hp=?, notified_energy=? WHERE user_id=?", 
+                    (hp, last_hp_time, energy, last_e_time, notif_hp, notif_e, u_id)
+                )
+        conn.commit()
+    return notifications
 
 def add_global_event(text: str):
     with get_connection() as conn:
@@ -172,13 +319,11 @@ def simulate_bot_activity():
     with get_connection() as conn:
         cursor = conn.cursor()
 
-        # 1. Возврат просроченных лотов с ТП
         cursor.execute("SELECT lot_id, seller_id, item_id, item_type, is_bot FROM trading_post WHERE expires_at < ?", (now,))
         for lot_id, s_id, i_id, idx_type, is_b in cursor.fetchall():
             if not is_b: give_item(s_id, i_id, idx_type, 1)
             cursor.execute("DELETE FROM trading_post WHERE lot_id=?", (lot_id,))
             
-        # 2. Боты на ТП
         cursor.execute("SELECT COUNT(*) FROM trading_post WHERE is_bot=0")
         player_lots = cursor.fetchone()[0]
         if player_lots < 50:
@@ -241,7 +386,24 @@ def seed_all():
             ("clan_create_cost_gems", "100"),
             ("clan_create_cost_gold", "0"),
             ("dungeon_trap_chance", "0.2"),
-            ("dungeon_mimic_chance", "0.15")
+            ("dungeon_mimic_chance", "0.15"),
+            
+            # --- НАСТРОЙКИ МИНИ-ИГР ---
+            ("mg_fish_gold_min", "70"),
+            ("mg_fish_gold_max", "120"),
+            ("mg_fish_gem_chance", "0.10"),
+            ("mg_fish_gem_amount", "1"),
+            ("mg_mine_gold_min", "35"),
+            ("mg_mine_gold_max", "65"),
+            ("mg_mine_gem_amount", "1"),
+            ("mg_dice_bet", "50"),
+            ("mg_dice_win_gold", "130"),
+            
+            # --- НАСТРОЙКИ ВЗЛОМА ---
+            ("mg_lock_gold_min", "150"),
+            ("mg_lock_gold_max", "250"),
+            ("mg_lock_gem_chance", "0.15"),
+            ("mg_lock_gem_amount", "2"),
         ]
         cursor.executemany("INSERT OR REPLACE INTO game_settings VALUES (?, ?)", settings)
         
@@ -700,7 +862,6 @@ def get_user(user_id: int):
             regen_seconds = int(s_dict.get("energy_regen_seconds", "7200"))
             max_energy = base_max + max(0, lvl // 20)
             
-            # --- ВОССТАНОВЛЕНИЕ ЭНЕРГИИ ---
             if current_energy < max_energy:
                 if last_time == 0:
                     cursor.execute("UPDATE users SET last_energy_time = ? WHERE user_id = ?", (now, user_id))
@@ -718,7 +879,6 @@ def get_user(user_id: int):
                         u_dict['energy'] = new_energy
                         u_dict['last_energy_time'] = new_last_time
             
-            # --- ВОССТАНОВЛЕНИЕ ЗДОРОВЬЯ В ЛАГЕРЕ (STATE_TOWN) ---
             last_hp_time = u_dict.get('last_hp_time', 0)
             current_hp = u_dict.get('hp', 100)
             max_player_hp = u_dict.get('max_hp', 100)
@@ -731,8 +891,8 @@ def get_user(user_id: int):
                     u_dict['last_hp_time'] = now
                 else:
                     time_passed = now - last_hp_time
-                    regen_interval = 60 # 1 минута
-                    regen_amount = max(1, int(max_player_hp * 0.05)) # 5% от макс хп в минуту
+                    regen_interval = 60 
+                    regen_amount = max(1, int(max_player_hp * 0.05))
                     
                     if time_passed >= regen_interval:
                         cycles = time_passed // regen_interval
@@ -995,7 +1155,6 @@ def remove_from_queue(user_id: int):
         conn.cursor().execute("DELETE FROM arena_queue WHERE user_id = ?", (user_id,))
         conn.commit()
 
-# --- ВЫПАДЕНИЕ КАРТОЧЕК ---
 def roll_card(user_id: int, theme: str = None) -> dict:
     user = get_user(user_id)
     pity = user.get('pity_counter', 0)
@@ -1040,5 +1199,4 @@ def roll_card(user_id: int, theme: str = None) -> dict:
         conn.commit()
         
         return {"card_id": card[0], "name": card[1], "emoji": card[2], "rarity": rarity}
-
 

@@ -3,7 +3,11 @@ import random
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
-from database import get_connection, get_user, update_user, check_and_generate_quests, get_unlocked_titles, get_top_clans, get_recent_global_events, simulate_bot_activity, get_clan, get_all_home_skins
+from database import (
+    get_connection, get_user, update_user, check_and_generate_quests, 
+    get_unlocked_titles, get_top_clans, get_recent_global_events, 
+    simulate_bot_activity, get_clan, get_all_home_skins, get_online_users
+)
 
 router = Router()
 
@@ -81,6 +85,17 @@ def generate_town_text(user: dict) -> str:
         f"{log_text}\n"
         "Куда отправимся?"
     )
+
+# --- КОМАНДА ПРОСМОТРА ОНЛАЙНА ---
+@router.message(Command("online"))
+async def cmd_online(message: Message):
+    count, names = get_online_users(15) # Онлайн за последние 15 минут
+    if count == 0:
+        text = "🟢 **Онлайн за последние 15 минут:**\nНикого нет в сети."
+    else:
+        names_str = ", ".join(names)
+        text = f"🟢 **Онлайн за последние 15 минут: {count} игроков**\n({names_str})"
+    await message.answer(text, parse_mode="Markdown")
 
 @router.message(Command("start", "town"))
 async def cmd_start(message: Message):

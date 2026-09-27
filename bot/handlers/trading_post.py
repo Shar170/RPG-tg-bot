@@ -154,7 +154,21 @@ async def tp_buy_do(callback: CallbackQuery):
                        (seller_id, buyer_id, item_id, price, tax, time.time()))
         conn.commit()
         
+    name = get_item_name(item_id)
     give_item(buyer_id, item_id, item_type, 1)
+    
+    # --- ОТПРАВКА УВЕДОМЛЕНИЯ ПРОДАВЦУ ---
+    try:
+        notify_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Скрыть", callback_data="hide_notification")]])
+        await callback.bot.send_message(
+            chat_id=seller_id,
+            text=f"💰 **Барахолка: Успешная продажа!**\nВаш лот **{name}** был приобретен за {price} 🪙.\n*(С учетом комиссии площадки вы получили {seller_profit} 🪙)*",
+            reply_markup=notify_kb,
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass # Игрок мог заблокировать бота
+        
     await callback.answer(f"🎉 Успешно куплено за {price} 🪙!", show_alert=True)
     await tp_main(callback, FSMContext(storage=None, key=None))
 
@@ -256,7 +270,6 @@ async def process_tp_price(message: Message, state: FSMContext):
         
     item_id, item_type = data['item_id'], data['item_type']
     
-    # Изымаем предмет и налог
     if not take_item(user_id, item_id, item_type, 1):
         await state.clear()
         update_user(user_id, state='STATE_TOWN')
@@ -264,7 +277,6 @@ async def process_tp_price(message: Message, state: FSMContext):
         
     update_user(user_id, gold=user['gold'] - fee, state='STATE_TOWN')
     
-    # Создаем лот
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("INSERT INTO trading_post (seller_id, item_id, item_type, price, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -320,3 +332,4 @@ async def tp_cancel(callback: CallbackQuery):
         
     await callback.answer(f"Лот снят! Возмещено {refund} 🪙.", show_alert=True)
     await tp_my_lots(callback)
+
