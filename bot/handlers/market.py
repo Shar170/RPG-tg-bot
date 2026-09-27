@@ -121,12 +121,13 @@ async def market_buy_do(callback: CallbackQuery):
     update_user(user['user_id'], gold=user['gold'], inventory=inv)
     await callback.answer(f"✅ Вы купили: {item['name']} за {price} 🪙", show_alert=True)
     
-    callback.data = f"market_buy_{item['type']}"
-    await market_buy_category(callback)
+    # ИСПРАВЛЕНО: Передаем категорию через аргумент, а не переписываем замороженный объект
+    await market_buy_category(callback, category_override=item['type'])
 
 @router.callback_query(F.data.in_(["market_buy_consumable", "market_buy_weapon", "market_buy_armor"]))
-async def market_buy_category(callback: CallbackQuery):
-    category = callback.data.replace("market_buy_", "")
+async def market_buy_category(callback: CallbackQuery, category_override: str = None):
+    # ИСПРАВЛЕНО: Используем переданный аргумент, если он есть
+    category = category_override or callback.data.replace("market_buy_", "")
     user = get_user(callback.from_user.id)
     clan = get_clan(user.get('clan_id', 0))
     is_max_clan = clan and clan.get('level', 1) >= 20

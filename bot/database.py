@@ -36,6 +36,10 @@ def init_db():
         except sqlite3.OperationalError: pass
         try: cursor.execute("ALTER TABLE users ADD COLUMN pity_counter INTEGER DEFAULT 0")
         except sqlite3.OperationalError: pass
+        
+        # --- НОВЫЕ КОЛОНКИ ДЛЯ РЕГЕНЕРАЦИИ ЗДОРОВЬЯ ---
+        try: cursor.execute("ALTER TABLE users ADD COLUMN last_hp_time INTEGER DEFAULT 0")
+        except sqlite3.OperationalError: pass
             
         cursor.execute('''CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY, username TEXT, state TEXT, hp INTEGER, max_hp INTEGER,
@@ -43,7 +47,7 @@ def init_db():
             level INTEGER DEFAULT 1, xp INTEGER DEFAULT 0, clan_id INTEGER DEFAULT 0, gems INTEGER DEFAULT 0, 
             quests_data TEXT DEFAULT '{}', clan_role TEXT DEFAULT 'thrall', energy INTEGER DEFAULT 5, 
             last_energy_time INTEGER DEFAULT 0, last_msg_id INTEGER DEFAULT 0, is_bot INTEGER DEFAULT 0, 
-            dust INTEGER DEFAULT 0, pity_counter INTEGER DEFAULT 0)''')
+            dust INTEGER DEFAULT 0, pity_counter INTEGER DEFAULT 0, last_hp_time INTEGER DEFAULT 0)''')
             
         cursor.execute('''CREATE TABLE IF NOT EXISTS global_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, timestamp REAL)''')
@@ -696,6 +700,7 @@ def get_user(user_id: int):
             regen_seconds = int(s_dict.get("energy_regen_seconds", "7200"))
             max_energy = base_max + max(0, lvl // 20)
             
+            # --- ВОССТАНОВЛЕНИЕ ЭНЕРГИИ ---
             if current_energy < max_energy:
                 if last_time == 0:
                     cursor.execute("UPDATE users SET last_energy_time = ? WHERE user_id = ?", (now, user_id))
@@ -713,6 +718,36 @@ def get_user(user_id: int):
                         u_dict['energy'] = new_energy
                         u_dict['last_energy_time'] = new_last_time
             
+            # --- ВОССТАНОВЛЕНИЕ ЗДОРОВЬЯ В ЛАГЕРЕ (STATE_TOWN) ---
+            last_hp_time = u_dict.get('last_hp_time', 0)
+            current_hp = u_dict.get('hp', 100)
+            max_player_hp = u_dict.get('max_hp', 100)
+            state = u_dict.get('state', 'STATE_TOWN')
+            
+            if current_hp < max_player_hp and state == 'STATE_TOWN':
+                if last_hp_time == 0:
+                    cursor.execute("UPDATE users SET last_hp_time = ? WHERE user_id = ?", (now, user_id))
+                    conn.commit()
+                    u_dict['last_hp_time'] = now
+                else:
+                    time_passed = now - last_hp_time
+                    regen_interval = 60 # 1 минута
+                    regen_amount = max(1, int(max_player_hp * 0.05)) # 5% от макс хп в минуту
+                    
+                    if time_passed >= regen_interval:
+                        cycles = time_passed // regen_interval
+                        new_hp = min(max_player_hp, current_hp + (cycles * regen_amount))
+                        new_last_hp_time = last_hp_time + (cycles * regen_interval)
+                        
+                        cursor.execute("UPDATE users SET hp = ?, last_hp_time = ? WHERE user_id = ?", (new_hp, new_last_hp_time, user_id))
+                        conn.commit()
+                        u_dict['hp'] = new_hp
+                        u_dict['last_hp_time'] = new_last_hp_time
+            elif current_hp == max_player_hp and last_hp_time != 0:
+                cursor.execute("UPDATE users SET last_hp_time = 0 WHERE user_id = ?", (user_id,))
+                conn.commit()
+                u_dict['last_hp_time'] = 0
+
             return u_dict
     return None
 
@@ -1005,4 +1040,5 @@ def roll_card(user_id: int, theme: str = None) -> dict:
         conn.commit()
         
         return {"card_id": card[0], "name": card[1], "emoji": card[2], "rarity": rarity}
+
 
