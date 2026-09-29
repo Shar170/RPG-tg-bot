@@ -3,7 +3,7 @@ import random
 import time
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from database import get_connection, get_user, update_user
+from database import get_connection, get_user, update_user, log_event, add_quest_progress
 
 router = Router()
 
@@ -82,15 +82,18 @@ async def collection_sets(callback: CallbackQuery):
     for set_id, s_info in sets.items():
         cards_in_set = get_cards_in_set(set_id)
         
-        # Строим визуальный ряд эмодзи для кнопки
+        # Строим визуальный ряд эмодзи для кнопки и считаем собранные
         emoji_str = ""
+        collected = 0
         for c in cards_in_set:
             if c['card_id'] in user_cards:
                 emoji_str += c['emoji']
+                collected += 1
             else:
                 emoji_str += "❔"
                 
-        btn_text = f"{s_info['name']} [{emoji_str}]"
+        status_icon = "🟢" if collected == len(cards_in_set) else "🔴"
+        btn_text = f"{status_icon} {s_info['name']} [{emoji_str}]"
         buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"collection_view:{set_id}")])
         
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="collection_main")])
@@ -153,6 +156,10 @@ async def collection_claim_reward(callback: CallbackQuery):
         cur.execute("INSERT INTO user_boxes (user_id, box_id, count) VALUES (?, ?, 1) ON CONFLICT(user_id, box_id) DO UPDATE SET count=count+1", (user_id, box_id))
         conn.commit()
         
+    # ПРОГРЕСС КВЕСТА И ЛОГИРОВАНИЕ
+    add_quest_progress(user_id, "complete_card_set", 1)
+    log_event(user_id, 'collection', 'claim_set_reward', 1, {'set_id': set_id, 'box_id': box_id})
+        
     await callback.answer("🎉 Набор сдан! Лутбокс добавлен в вашу кладовую.", show_alert=True)
     await collection_main(callback)
 
@@ -187,6 +194,8 @@ async def collection_dust_duplicates(callback: CallbackQuery):
     if dust_gained == 0:
         await callback.answer("У вас нет дубликатов для распыления!", show_alert=True)
     else:
+        # ЛОГИРОВАНИЕ
+        log_event(user_id, 'collection', 'dust_cards', dust_gained)
         await callback.answer(f"♻️ Распылено дубликатов! Получено пыли: +{dust_gained} ✨", show_alert=True)
         await collection_main(callback)
 
@@ -262,6 +271,9 @@ async def collection_craft_execute(callback: CallbackQuery):
         cur.execute("INSERT INTO user_cards (user_id, card_id, count, first_at) VALUES (?, ?, 1, ?)", 
                     (user['user_id'], card_id, time.time()))
         conn.commit()
+        
+    # ЛОГИРОВАНИЕ
+    log_event(user['user_id'], 'collection', 'craft_card', -cost, {'card_id': card_id})
         
     await callback.answer(f"✨ Создано: {c_emoji} {c_name}!", show_alert=True)
     
@@ -368,6 +380,9 @@ async def box_open(callback: CallbackQuery):
                 conn.commit()
     
     update_user(user['user_id'], gold=user['gold'], gems=user.get('gems', 0), inventory=inv)
+    
+    # ЛОГИРОВАНИЕ ОТКРЫТИЯ
+    log_event(user['user_id'], 'collection', 'open_box', 1, {'box_id': box_id})
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📦 Открыть еще один", callback_data="collection_boxes")],

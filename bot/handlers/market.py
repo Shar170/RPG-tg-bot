@@ -9,7 +9,7 @@ router = Router()
 def get_market_items(item_type: str):
     with get_connection() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT item_id, name, base_price, stats FROM items WHERE type = ?", (item_type,))
+        cur.execute("SELECT item_id, name, base_price, stats FROM items WHERE type = ? AND base_price > 0", (item_type,))
         return [{"item_id": r[0], "name": r[1], "price": r[2], "stats": json.loads(r[3])} for r in cur.fetchall()]
 
 
@@ -37,9 +37,11 @@ async def open_market(callback: CallbackQuery):
          InlineKeyboardButton(text="👕 Продать снаряжение", callback_data="market_sell_equip")],
         [InlineKeyboardButton(text="🔙 В лагерь", callback_data="town_back")]
     ])
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except: pass
 
-# --- ПРОДАТЬ ВЕСЬ ЛУТ (НОВОЕ ТЗ) ---
+# --- ПРОДАТЬ ВЕСЬ ЛУТ ---
 @router.callback_query(F.data == "market_sell_all_loot")
 async def market_sell_all_loot(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
@@ -100,10 +102,96 @@ async def market_sell_all_loot(callback: CallbackQuery):
     await callback.answer(f"✅ Продано {count_sold} предметов!\nПолучено: {profit} 🪙", show_alert=True)
     await open_market(callback)
 
-# --- РАЗДЕЛ ПОКУПКИ ---
-@router.callback_query(F.data.startswith("market_buy_do:"))
-async def market_buy_do(callback: CallbackQuery):
-    item_id = callback.data.replace("market_buy_do:", "")
+# ==========================================
+# --- РАЗДЕЛ ПОКУПКИ (С ПОДРАЗДЕЛАМИ) ---
+# ==========================================
+
+@router.callback_query(F.data == "market_buy_weapon")
+async def market_buy_weapon(callback: CallbackQuery):
+    text = "🗡️ **Оружейная**\nВыберите категорию оружия:"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗡️ Ближний бой (Ур. 1-20)", callback_data="market_list:weapon:melee:1:20")],
+        [InlineKeyboardButton(text="⚔️ Ближний бой (Ур. 21+)", callback_data="market_list:weapon:melee:21:99")],
+        [InlineKeyboardButton(text="🏹 Дальний бой (Ур. 1-20)", callback_data="market_list:weapon:ranged:1:20")],
+        [InlineKeyboardButton(text="🎯 Дальний бой (Ур. 21+)", callback_data="market_list:weapon:ranged:21:99")],
+        [InlineKeyboardButton(text="🔙 На рынок", callback_data="town_market")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+
+@router.callback_query(F.data == "market_buy_armor")
+async def market_buy_armor(callback: CallbackQuery):
+    text = "🛡️ **Бронник**\nВыберите класс брони:"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👕 Легкая/Начальная (Ур. 1-20)", callback_data="market_list:armor:all:1:20")],
+        [InlineKeyboardButton(text="🛡️ Тяжелая/Элитная (Ур. 21+)", callback_data="market_list:armor:all:21:99")],
+        [InlineKeyboardButton(text="🔙 На рынок", callback_data="town_market")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+
+@router.callback_query(F.data == "market_buy_consumable")
+async def market_buy_consumable(callback: CallbackQuery):
+    await market_list_items(callback, "consumable", "all", 0, 99)
+
+@router.callback_query(F.data.startswith("market_list:"))
+async def market_list_router(callback: CallbackQuery):
+    _, cat, subcat, min_lvl, max_lvl = callback.data.split(":")
+    await market_list_items(callback, cat, subcat, int(min_lvl), int(max_lvl))
+
+async def market_list_items(callback: CallbackQuery, category: str, subcat: str, min_lvl: int, max_lvl: int):
+    user = get_user(callback.from_user.id)
+    clan = get_clan(user.get('clan_id', 0))
+    is_max_clan = clan and clan.get('level', 1) >= 20
+    
+    items = get_market_items(category)
+    if not items: return await callback.answer("В этой категории пока нет товаров!", show_alert=True)
+    
+    filtered_items = []
+    for item in items:
+        req_lvl = int(item['stats'].get('req_lvl', 1))
+        rng = item['stats'].get('range', 'all')
+        
+        if min_lvl <= req_lvl <= max_lvl:
+            if subcat == 'all' or rng == subcat:
+                filtered_items.append(item)
+                
+    if not filtered_items:
+        return await callback.answer("Товаров в этой категории не найдено!", show_alert=True)
+        
+    cat_names = {"consumable": "Зелья и припасы", "weapon": "Оружие", "armor": "Броня"}
+    text = f"🛒 **Покупка: {cat_names.get(category, 'Товары')}**\n💰 Ваше золото: {user['gold']} 🪙\n\nВыберите товар:"
+    
+    buttons = []
+    for item in filtered_items:
+        stats_str = ""
+        if category == "weapon" and "dmg" in item["stats"]: stats_str = f" (⚔️ {item['stats']['dmg']})"
+        elif category == "armor" and "def" in item["stats"]: stats_str = f" (🛡️ {item['stats']['def']})"
+            
+        display_price = max(1, int(item['price'] * 0.7)) if is_max_clan else item['price']
+        
+        # Передаем параметры возврата в саму кнопку покупки
+        cb_data = f"mbuy:{item['item_id']}:{subcat}:{min_lvl}:{max_lvl}"
+        buttons.append([InlineKeyboardButton(text=f"{item['name']}{stats_str} — {display_price} 🪙", callback_data=cb_data)])
+        
+    if category == "weapon": back_cb = "market_buy_weapon"
+    elif category == "armor": back_cb = "market_buy_armor"
+    else: back_cb = "town_market"
+        
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data=back_cb)])
+    
+    try:
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
+    except Exception:
+        pass # Игнорируем ошибку Telegram "Message is not modified", если текст не изменился
+
+@router.callback_query(F.data.startswith("mbuy:"))
+async def market_buy_execute(callback: CallbackQuery):
+    # Разбираем callback, чтобы понимать, на какой раздел вернуть игрока
+    parts = callback.data.split(":")
+    item_id = parts[1]
+    subcat = parts[2]
+    min_lvl = int(parts[3])
+    max_lvl = int(parts[4])
+    
     user = get_user(callback.from_user.id)
     item = get_item(item_id)
     if not item: return await callback.answer("Товар не найден!", show_alert=True)
@@ -128,36 +216,13 @@ async def market_buy_do(callback: CallbackQuery):
     
     await callback.answer(f"✅ Вы купили: {item['name']} за {price} 🪙", show_alert=True)
     
-    # ИСПРАВЛЕНО: Передаем категорию через аргумент, а не переписываем замороженный объект
-    await market_buy_category(callback, category_override=item['type'])
+    # Возвращаем в тот же раздел, обновляя отображение золота
+    await market_list_items(callback, item['type'], subcat, min_lvl, max_lvl)
 
-@router.callback_query(F.data.in_(["market_buy_consumable", "market_buy_weapon", "market_buy_armor"]))
-async def market_buy_category(callback: CallbackQuery, category_override: str = None):
-    # ИСПРАВЛЕНО: Используем переданный аргумент, если он есть
-    category = category_override or callback.data.replace("market_buy_", "")
-    user = get_user(callback.from_user.id)
-    clan = get_clan(user.get('clan_id', 0))
-    is_max_clan = clan and clan.get('level', 1) >= 20
-    
-    items = get_market_items(category)
-    if not items: return await callback.answer("В этой категории пока нет товаров!", show_alert=True)
-        
-    cat_names = {"consumable": "Зелья и припасы", "weapon": "Оружие", "armor": "Броня"}
-    text = f"🛒 **Покупка: {cat_names.get(category, 'Товары')}**\n💰 Ваше золото: {user['gold']} 🪙\n\nВыберите товар:"
-    
-    buttons = []
-    for item in items:
-        stats_str = ""
-        if category == "weapon" and "dmg" in item["stats"]: stats_str = f" (⚔️ {item['stats']['dmg']})"
-        elif category == "armor" and "def" in item["stats"]: stats_str = f" (🛡️ {item['stats']['def']})"
-            
-        display_price = max(1, int(item['price'] * 0.7)) if is_max_clan else item['price']
-        buttons.append([InlineKeyboardButton(text=f"{item['name']}{stats_str} — {display_price} 🪙", callback_data=f"market_buy_do:{item['item_id']}")])
-        
-    buttons.append([InlineKeyboardButton(text="🔙 Назад на рынок", callback_data="town_market")])
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
 
+# ==========================================
 # --- РАЗДЕЛ ПРОДАЖИ ЛУТА (ВРУЧНУЮ) ---
+# ==========================================
 @router.callback_query(F.data == "market_sell_loot")
 async def market_sell_loot(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
@@ -232,7 +297,9 @@ async def market_sell_loot_do(callback: CallbackQuery):
     await callback.answer(f"Продано {amount} шт. за {total_profit} 🪙!", show_alert=True)
     await market_sell_loot(callback)
 
+# ==========================================
 # --- РАЗДЕЛ ПРОДАЖИ СНАРЯЖЕНИЯ (ВРУЧНУЮ) ---
+# ==========================================
 @router.callback_query(F.data == "market_sell_equip")
 async def market_sell_equip(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
@@ -282,4 +349,3 @@ async def market_sell_equip_do(callback: CallbackQuery):
     
     await callback.answer(f"Продано: {item_data['name']} за {price} 🪙", show_alert=True)
     await market_sell_equip(callback)
-

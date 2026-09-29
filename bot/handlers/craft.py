@@ -1,6 +1,6 @@
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from database import get_user, update_user, get_all_recipes, get_item, get_item_name, add_quest_progress, add_global_event, track_stat
+from database import get_user, update_user, get_all_recipes, get_item, get_item_name, add_quest_progress, add_global_event, track_stat, log_event
 
 router = Router()
 
@@ -48,16 +48,27 @@ async def do_craft(callback: CallbackQuery):
     for m, c in recipe['materials'].items(): materials[m] -= c
         
     result_item = get_item(recipe['result_item_id'])
-    if result_item['type'] in ["weapon", "armor"]: inv.setdefault("backpack", []).append(recipe['result_item_id'])
-    elif result_item['type'] == "artifact": inv.setdefault("artifacts", []).append(recipe['result_item_id'])
-    else: inv.setdefault("materials", {})[recipe['result_item_id']] = materials.get(recipe['result_item_id'], 0) + 1
+    
+    # Распределение по категориям инвентаря и прогресс квестов
+    if result_item['type'] in ["weapon", "armor"]: 
+        inv.setdefault("backpack", []).append(recipe['result_item_id'])
+        
+        if result_item['type'] == "weapon":
+            add_quest_progress(user['user_id'], "craft_weapon", 1)
+        elif result_item['type'] == "armor":
+            add_quest_progress(user['user_id'], "craft_armor", 1)
+            
+    elif result_item['type'] == "artifact": 
+        inv.setdefault("artifacts", []).append(recipe['result_item_id'])
+    else: 
+        inv.setdefault("materials", {})[recipe['result_item_id']] = materials.get(recipe['result_item_id'], 0) + 1
         
     inv["materials"] = materials
     update_user(user['user_id'], gold=user['gold'], inventory=inv)
     
-    # ПРОГРЕСС КВЕСТОВ И СТАТЫ (Крафт)
-    add_quest_progress(user['user_id'], "craft_items", 1)
+    # ПРОГРЕСС СТАТИСТИКИ И ЛОГИРОВАНИЕ
     track_stat(user['user_id'], 'items_crafted', 1)
+    log_event(user['user_id'], 'economy', 'craft_item', -recipe['gold'], {'item_id': recipe['result_item_id'], 'item_type': result_item['type']})
     
     # --- ЗАПИСЬ В ВЕСТНИК ---
     if result_item['type'] in ["weapon", "armor"] and recipe['gold'] >= 1000:
@@ -65,3 +76,4 @@ async def do_craft(callback: CallbackQuery):
     
     await callback.answer(f"✨ Создано: {result_item['name']}!", show_alert=True)
     await open_workshop(callback)
+

@@ -5,6 +5,7 @@ import random
 import time
 from config import DB_PATH
 from data.ingredients import INGREDIENTS
+from data.items import ITEMS
 
 def get_connection():
     return sqlite3.connect(DB_PATH, timeout=10.0)
@@ -530,43 +531,38 @@ def seed_all():
             
         cursor.executemany("INSERT OR REPLACE INTO alchemy_ingredients VALUES (?, ?, ?, ?)", INGREDIENTS)
 
-        items = [
-            ("ragout", "Сытное рагу", "consumable", 20, json.dumps({"heal_pct": 0.35})),
-            ("health_potion", "Зелье: Хил", "consumable", 30, json.dumps({"heal_pct": 0.25})),
-            ("repair_kit", "Рем-набор", "consumable", 50, json.dumps({"repair": 100})),
-            ("khmer_amulet", "Амулет Жизни", "artifact", 1500, json.dumps({"max_hp_bonus": 50})),
-            ("smoke_bomb", "Дымовая бомба", "artifact", 120, json.dumps({"escape": True})),
-            ("iron_ingot", "Железный слиток", "material", 15, "{}"),
-            ("epic_token", "Эпический жетон", "material", 200, "{}"),
-            ("wood_sword", "Деревянный меч", "weapon", 25, json.dumps({"dmg": 12, "range": "melee", "req_lvl": 1})),
-            ("iron_sword", "Стальной меч", "weapon", 250, json.dumps({"dmg": 26, "range": "melee", "req_lvl": 5})),
-            ("steel_greatsword", "Стальной двуручник", "weapon", 1800, json.dumps({"dmg": 52, "range": "melee", "req_lvl": 12})),
-            ("mithril_blade", "Мифриловый Клинок", "weapon", 8500, json.dumps({"dmg": 85, "range": "melee", "req_lvl": 22})),
-            ("demon_scythe", "Коса Демона", "weapon", 25000, json.dumps({"dmg": 135, "range": "melee", "req_lvl": 35})),
-            ("god_slayer", "Убийца Богов", "weapon", 65000, json.dumps({"dmg": 210, "range": "melee", "req_lvl": 50})),
-            ("short_bow", "Охотничий лук", "weapon", 80, json.dumps({"dmg": 16, "range": "ranged", "req_lvl": 2})),
-            ("longbow", "Длинный лук", "weapon", 950, json.dumps({"dmg": 38, "range": "ranged", "req_lvl": 8})),
-            ("heavy_crossbow", "Тяжелый арбалет", "weapon", 3200, json.dumps({"dmg": 68, "range": "ranged", "req_lvl": 16})),
-            ("elven_bow", "Эльфийский лук", "weapon", 12000, json.dumps({"dmg": 105, "range": "ranged", "req_lvl": 28})),
-            ("dragon_breath_staff", "Посох Дыхания Дракона", "weapon", 38000, json.dumps({"dmg": 160, "range": "ranged", "req_lvl": 42})),
-            ("leather_armor", "Кожаная броня", "armor", 25, json.dumps({"def": 8, "req_lvl": 1})),
-            ("chainmail", "Кольчуга", "armor", 350, json.dumps({"def": 22, "req_lvl": 5})),
-            ("steel_plate", "Стальные Латы", "armor", 3000, json.dumps({"def": 45, "req_lvl": 14})),
-            ("mithril_plate", "Мифриловый Доспех", "armor", 14000, json.dumps({"def": 75, "req_lvl": 25})),
-            ("dragonbone_armor", "Драконья Чешуя", "armor", 35000, json.dumps({"def": 115, "req_lvl": 38})),
-            ("titan_fortress", "Титановая Крепость", "armor", 75000, json.dumps({"def": 170, "req_lvl": 50}))
-        ]
-        cursor.executemany("INSERT OR REPLACE INTO items VALUES (?, ?, ?, ?, ?)", items)
+        # Выносим арсенал в отдельный файл
+        cursor.executemany("INSERT OR REPLACE INTO items VALUES (?, ?, ?, ?, ?)", ITEMS)
 
         recipes = [
             ("rec_iron_sword", "iron_sword", json.dumps({"iron_ingot": 6}), 120),
             ("rec_chainmail", "chainmail", json.dumps({"iron_ingot": 12}), 150),
             ("rec_steel_plate", "steel_plate", json.dumps({"iron_ingot": 18}), 1800),
             ("rec_steel_greatsword", "steel_greatsword", json.dumps({"iron_ingot": 16}), 1000),
-            ("rec_repair_kit", "repair_kit", json.dumps({"iron_ingot": 1}), 15),
-            ("rec_smoke_bomb", "smoke_bomb", json.dumps({"iron_ingot": 1, "cave_mushroom": 2}), 50)
+            ("rec_smoke_bomb", "smoke_bomb", json.dumps({"iron_ingot": 1, "poison_gland": 1}), 50),
+            ("rec_shrapnel_bomb", "shrapnel_bomb", json.dumps({"iron_ingot": 2, "fire_root": 1}), 80),
+            ("rec_scroll_weakness", "scroll_weakness", json.dumps({"bone_marrow": 1, "demon_blood": 1}), 120),
+            ("rec_time_hourglass", "time_hourglass", json.dumps({"time_tear": 2, "gold_petal": 1}), 350)
         ]
         cursor.executemany("INSERT OR REPLACE INTO recipes VALUES (?, ?, ?, ?)", recipes)
+        
+        # Добавление реликвий в таблицу дропа для боссов
+        relic_drops = [
+            ("solo", "art_cursed_blade", 0.05, 1, 1),
+            ("solo", "art_frost_mourne", 0.03, 1, 1),
+            ("solo", "art_thunder_fury", 0.02, 1, 1),
+            ("solo", "art_blood_drinker", 0.01, 1, 1),
+            ("event_6", "art_world_breaker", 0.01, 1, 1),
+            
+            # Дроп эксклюзивных артефактов
+            ("solo", "art_dragon_heart", 0.04, 1, 1),
+            ("solo", "art_shadow_cloak", 0.04, 1, 1),
+            ("solo", "art_demonic_pact", 0.03, 1, 1),
+            ("solo", "art_aegis_shard", 0.02, 1, 1),
+            ("event_6", "art_blood_stone", 0.02, 1, 1)
+        ]
+        cursor.executemany("INSERT OR IGNORE INTO loot_tables (location_id, item_id, chance, min_amount, max_amount) VALUES (?, ?, ?, ?, ?)", relic_drops)
+        
         conn.commit()
         
         seed_bots()
@@ -754,7 +750,15 @@ def calculate_damage_received(raw_dmg: int, def_val: int) -> int:
 def get_scaled_mob(mob_id: str, player_lvl: int = 1) -> dict:
     mob = get_mob_by_name(mob_id).copy()
     if player_lvl > 3:
+        # Базовый скейл
         scale = 1.0 + (player_lvl - 3) * 0.08
+        
+        # Хардкор-скейл для высоких уровней (экспонента)
+        if player_lvl >= 30:
+            scale += (player_lvl - 30) * 0.05
+        if player_lvl >= 50:
+            scale += (player_lvl - 50) * 0.15 # Очень сильный буст для 50+
+
         mob['hp_min'] = int(mob['hp_min'] * scale)
         mob['hp_max'] = int(mob['hp_max'] * scale)
         mob['dmg_min'] = int(mob['dmg_min'] * scale)
@@ -762,6 +766,18 @@ def get_scaled_mob(mob_id: str, player_lvl: int = 1) -> dict:
         mob['gold_min'] = int(mob.get('gold_min', 5) * scale)
         mob['gold_max'] = int(mob.get('gold_max', 15) * scale)
         mob['xp_reward'] = int(mob.get('xp_reward', 10) * scale)
+        
+        # Динамическое усиление навыков моба
+        skill_bonus = player_lvl * 0.005 # +0.5% к шансу за каждый уровень игрока
+        new_skills = {}
+        for k, v in mob['skills'].items():
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                # Кап шанса на 80%, чтобы не было бесконечных уворотов
+                new_skills[k] = min(0.80, v + skill_bonus)
+            else:
+                new_skills[k] = v
+        mob['skills'] = new_skills
+
     return mob
 
 def track_stat(user_id: int, stat_name: str, amount: int = 1):
