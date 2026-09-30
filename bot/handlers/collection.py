@@ -66,7 +66,9 @@ async def collection_main(callback: CallbackQuery):
         [InlineKeyboardButton(text="♻️ Распылить дубликаты", callback_data="collection_dust")],
         [InlineKeyboardButton(text="🔙 В Дом", callback_data="town_home")]
     ])
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except: pass
 
 # ==========================================
 # --- ПРОСМОТР И СБОРКА НАБОРОВ ---
@@ -241,14 +243,23 @@ async def collection_craft_cards_list(callback: CallbackQuery):
             btn_text = f"{c['emoji']} {c['name']} — {cost} ✨"
             buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"coll_cr_do:{c['card_id']}")])
             
+    if not buttons:
+        text = f"✨ **Создание карт: {s_info['name']}**\n\n🎉 Вы скрафтили все недостающие карты в этом наборе!"
+            
     buttons.append([InlineKeyboardButton(text="🔙 К выбору набора", callback_data="collection_craft_sets")])
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
+    
+    try:
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
+    except: pass
 
 @router.callback_query(F.data.startswith("coll_cr_do:"))
 async def collection_craft_execute(callback: CallbackQuery):
     card_id = callback.data.split(":")[1]
     user = get_user(callback.from_user.id)
     dust = user.get('dust', 0)
+    
+    # СТРОГАЯ ПРОВЕРКА ОТ ДАБЛ-КЛИКОВ: есть ли уже эта карта
+    user_cards = get_user_cards_dict(user['user_id'])
     
     with get_connection() as conn:
         cur = conn.cursor()
@@ -259,17 +270,27 @@ async def collection_craft_execute(callback: CallbackQuery):
         return await callback.answer("Карта не найдена!", show_alert=True)
         
     c_name, c_emoji, set_id, rarity = card_info
+    
+    # Если юзер уже скрафтил карту, но успел кликнуть еще раз до обновления меню
+    if card_id in user_cards:
+        await callback.answer("Эта карта уже есть в вашей коллекции!", show_alert=True)
+        callback.data = f"coll_cr_set:{set_id}"
+        return await collection_craft_cards_list(callback)
+    
     cost = DUST_COST.get(rarity, 10)
     
     if dust < cost:
         return await callback.answer(f"Недостаточно пыли! Нужно {cost} ✨", show_alert=True)
         
-    # Списываем пыль и добавляем карту
+    # Списываем пыль и добавляем карту (строго count = 1, чтобы не генерить дубликаты)
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute("UPDATE users SET dust = dust - ? WHERE user_id=?", (cost, user['user_id']))
-        cur.execute("INSERT INTO user_cards (user_id, card_id, count, first_at) VALUES (?, ?, 1, ?)", 
-                    (user['user_id'], card_id, time.time()))
+        cur.execute("""
+            INSERT INTO user_cards (user_id, card_id, count, first_at) 
+            VALUES (?, ?, 1, ?) 
+            ON CONFLICT(user_id, card_id) DO UPDATE SET count = 1
+        """, (user['user_id'], card_id, time.time()))
         conn.commit()
         
     # ЛОГИРОВАНИЕ
@@ -277,7 +298,7 @@ async def collection_craft_execute(callback: CallbackQuery):
         
     await callback.answer(f"✨ Создано: {c_emoji} {c_name}!", show_alert=True)
     
-    # Возвращаем в список карт этого сета
+    # Возвращаем в список карт этого сета (кнопка скупленной карты исчезнет)
     callback.data = f"coll_cr_set:{set_id}"
     await collection_craft_cards_list(callback)
 

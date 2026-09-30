@@ -6,7 +6,8 @@ from aiogram.filters import Command
 from database import (
     get_connection, get_user, update_user, check_and_generate_quests, 
     get_unlocked_titles, get_top_clans, get_recent_global_events, 
-    simulate_bot_activity, get_clan, get_all_home_skins, get_online_users
+    simulate_bot_activity, get_clan, get_all_home_skins, get_online_users,
+    get_player_max_energy
 )
 
 router = Router()
@@ -74,13 +75,17 @@ def generate_town_text(user: dict) -> str:
             banner = clan.get('banner', '')
             b_text = f"{banner} " if banner else ""
             clan_str = f"\n🛡️ Клан: **{b_text}{clan['name']}** (Ур. {clan['level']})"
+            
+    # Получаем правильную максимальную энергию на основе уровня игрока
+    max_energy = get_player_max_energy(lvl)
     
     return (
         f"🏕️ **Лагерь Искателей (Камария)**\n\n"
-        f"👤 **{user['username']}** | Ур. {lvl}{clan_str}\n"
+        f"👤 **{user['username']}** | Ур. {lvl}\n"
         f"🌟 Опыт: `{xp_bar}` {xp}/{max_xp} XP\n"
-        f"❤️ ХП: {user['hp']}/{user['max_hp']} | ⚡ ОД: {user.get('energy', 5)}/{user.get('max_energy', 5)}\n"
+        f"❤️ ХП: {user['hp']}/{user['max_hp']} | ⚡ ОД: {user.get('energy', 5)}/{max_energy}\n"
         f"💰 Золото: {user.get('gold', 0)} 🪙 | 💎 Кристаллы: {user.get('gems', 0)} 💎"
+        f"{clan_str}"
         f"{clans_text}"
         f"{log_text}\n"
         "Куда отправимся?"
@@ -373,4 +378,5 @@ async def cb_town_skin_action(callback: CallbackQuery):
             return await callback.answer(error_msg, show_alert=True)
 
     await cb_town_home_settings(callback)
+
 
