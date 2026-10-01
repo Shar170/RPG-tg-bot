@@ -166,14 +166,19 @@ def generate_dungeon_graph(dungeon_type="solo", mobs_pool=None, boss_id=None, mi
     """
     Генерирует направленный граф подземелья (слои комнат).
     Принимает опциональный mobs_pool, boss_id и рамки количества комнат для гибкой настройки.
-    Веса комнат передаются в виде словаря: {"combat": 40, "puzzle": 30, "treasure": 20, "empty": 10}
+    Веса комнат передаются в виде словаря: {"combat": 30, "puzzle": 15, "treasure": 15, "empty": 10, "sleeping_enemy": 10, "prisoner": 10, "map": 5, "sanctuary": 5}
     """
     if mobs_pool is None:
         mobs_pool = ["temple_guard", "living_idol", "khmer_priest", "poison_slime"]
     if boss_id is None:
         boss_id = "temple_guard" if dungeon_type == "solo" else "bone_dragon"
     if room_weights is None:
-        room_weights = {"combat": 40, "puzzle": 20, "treasure": 20, "empty": 20}
+        room_weights = {"combat": 30, "puzzle": 15, "treasure": 15, "empty": 10, "sleeping_enemy": 10, "prisoner": 10, "map": 5, "sanctuary": 5}
+
+    # На случай если старые параметры не имеют новых комнат
+    for new_r in ["sleeping_enemy", "prisoner", "map", "sanctuary"]:
+        if new_r not in room_weights:
+            room_weights[new_r] = 5
 
     def get_id():
         return str(uuid.uuid4())[:6]
@@ -186,6 +191,9 @@ def generate_dungeon_graph(dungeon_type="solo", mobs_pool=None, boss_id=None, mi
 
     types_list = list(room_weights.keys())
     weights_list = list(room_weights.values())
+    
+    sanctuary_spawned = False
+    map_spawned = False
 
     for i in range(total_layers):
         next_layer = []
@@ -199,9 +207,19 @@ def generate_dungeon_graph(dungeon_type="solo", mobs_pool=None, boss_id=None, mi
                 r_type = random.choices(["combat", "puzzle"], weights=first_weights, k=1)[0]
             else:
                 r_type = random.choices(types_list, weights=weights_list, k=1)[0]
+                
+            # Ограничения: святилище и карта не спамятся
+            if r_type == "sanctuary":
+                if sanctuary_spawned:
+                    r_type = "empty"
+                sanctuary_spawned = True
+            elif r_type == "map":
+                if map_spawned:
+                    r_type = "empty"
+                map_spawned = True
             
             node_data = {"type": r_type, "next": []}
-            if r_type == "combat":
+            if r_type in ["combat", "sleeping_enemy"]:
                 node_data["mob_id"] = random.choice(mobs_pool)
             elif r_type == "puzzle":
                 p_cat = random.choice(["matrix_rule", "clock_angle"]) if dungeon_type == "war" else None
@@ -231,3 +249,4 @@ def generate_dungeon_graph(dungeon_type="solo", mobs_pool=None, boss_id=None, mi
         "gathered_materials": {},
         "gathered_equipment": []
     }
+
