@@ -60,8 +60,13 @@ async def inv_list_category(callback: CallbackQuery):
             is_equipped = " ✅ (Надето)" if eq.get(cat) == i_id else ""
             stats_str = ""
             stats = item.get('stats', {})
+            
+            # Отображаем требуемый уровень, если он больше 1
+            req_lvl = int(stats.get('req_lvl', 1))
+            if req_lvl > 1: stats_str += f"🏅Ур.{req_lvl} "
+                
             if 'dmg' in stats: stats_str += f"⚔️{stats['dmg']} "
-            if 'def' in stats: stats_str += f"🛡️️{stats['def']} "
+            if 'def' in stats: stats_str += f"🛡{stats['def']} "
             if 'dodge' in stats: stats_str += f"💨{int(stats['dodge']*100)}% "
             if 'crit_chance' in stats: stats_str += f"💥{int(stats['crit_chance']*100)}% "
             if 'vamp_chance' in stats: stats_str += f"🩸{int(stats['vamp_chance']*100)}% "
@@ -92,6 +97,16 @@ async def inv_equip_item(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     inv = user.get('inventory', {})
     eq = inv.setdefault('equipment', {})
+    
+    # Проверка уровня при попытке надеть предмет
+    if eq.get(cat) != item_id:
+        item = get_item(item_id)
+        if item:
+            req_lvl = int(item.get('stats', {}).get('req_lvl', 1))
+            user_lvl = user.get('level', 1)
+            
+            if user_lvl < req_lvl:
+                return await callback.answer(f"🔒 Ваш уровень слишком мал!\nТребуется уровень: {req_lvl}", show_alert=True)
     
     if eq.get(cat) == item_id:
         del eq[cat]
