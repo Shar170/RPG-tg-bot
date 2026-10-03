@@ -4,8 +4,16 @@ import datetime
 import random
 import time
 from config import DB_PATH
+
+# Импорты из модуля data/
 from data.ingredients import INGREDIENTS
 from data.items import ITEMS
+from data.loot import LOOT_TABLES
+from data.cards import CARD_SETS, CARDS, LOOT_BOXES
+from data.skins import HOME_SKINS
+from data.locations import SOLO_DUNGEONS, WAR_REGIONS, DAILY_DUNGEONS
+from data.mobs import BESTIARY
+from data.recipes import RECIPES
 
 def get_connection():
     return sqlite3.connect(DB_PATH, timeout=10.0)
@@ -44,7 +52,6 @@ def init_db():
         try: cursor.execute("ALTER TABLE users ADD COLUMN notified_energy INTEGER DEFAULT 0")
         except sqlite3.OperationalError: pass
         
-        # --- Колонки для онлайна ---
         try: cursor.execute("ALTER TABLE users ADD COLUMN last_active_time REAL DEFAULT 0")
         except sqlite3.OperationalError: pass
         try: cursor.execute("ALTER TABLE users ADD COLUMN reengagement_stage INTEGER DEFAULT 0")
@@ -381,190 +388,52 @@ def seed_all():
     with get_connection() as conn:
         cursor = conn.cursor()
 
+        # Базовые настройки игры
         settings = [
-            ("flee_loss_percent", "0.3"),
-            ("base_unarmed_dmg", "5"),
-            ("max_energy", "5"),
-            ("energy_regen_seconds", "7200"),
-            ("energy_cost_solo", "0"),
-            ("energy_cost_event", "1"),
-            ("energy_cost_war", "0"),
-            ("energy_cost_minigame", "1"),
-            ("armor_formula_k", "60"),
-            ("max_damage_reduction", "0.75"),
-            ("clan_create_min_level", "50"),
-            ("clan_create_cost_gems", "100"),
-            ("clan_create_cost_gold", "0"),
-            ("dungeon_trap_chance", "0.2"),
+            ("flee_loss_percent", "0.3"), ("base_unarmed_dmg", "5"),
+            ("max_energy", "5"), ("energy_regen_seconds", "7200"),
+            ("energy_cost_solo", "0"), ("energy_cost_event", "1"),
+            ("energy_cost_war", "0"), ("energy_cost_minigame", "1"),
+            ("armor_formula_k", "60"), ("max_damage_reduction", "0.75"),
+            ("clan_create_min_level", "50"), ("clan_create_cost_gems", "100"),
+            ("clan_create_cost_gold", "0"), ("dungeon_trap_chance", "0.2"),
             ("dungeon_mimic_chance", "0.15"),
-            
-            # --- НАСТРОЙКИ МИНИ-ИГР ---
-            ("mg_fish_gold_min", "70"),
-            ("mg_fish_gold_max", "120"),
-            ("mg_fish_gem_chance", "0.10"),
-            ("mg_fish_gem_amount", "1"),
-            ("mg_mine_gold_min", "35"),
-            ("mg_mine_gold_max", "65"),
-            ("mg_mine_gem_amount", "1"),
-            ("mg_dice_bet", "50"),
-            ("mg_dice_win_gold", "130"),
-            
-            # --- НАСТРОЙКИ ВЗЛОМА ---
-            ("mg_lock_gold_min", "150"),
-            ("mg_lock_gold_max", "250"),
-            ("mg_lock_gem_chance", "0.15"),
-            ("mg_lock_gem_amount", "2"),
+            ("mg_fish_gold_min", "70"), ("mg_fish_gold_max", "120"),
+            ("mg_fish_gem_chance", "0.10"), ("mg_fish_gem_amount", "1"),
+            ("mg_mine_gold_min", "35"), ("mg_mine_gold_max", "65"),
+            ("mg_mine_gem_amount", "1"), ("mg_dice_bet", "50"),
+            ("mg_dice_win_gold", "130"), ("mg_lock_gold_min", "150"),
+            ("mg_lock_gold_max", "250"), ("mg_lock_gem_chance", "0.15"),
+            ("mg_lock_gem_amount", "2")
         ]
         cursor.executemany("INSERT OR REPLACE INTO game_settings VALUES (?, ?)", settings)
         
-        sets_seed = [
-            ("set_veg", "Овощи", "Дары природы", "common", "box_common_mats", "forest"),
-            ("set_fruit", "Фрукты", "Сладкий урожай", "common", "box_common_mats", "forest"),
-            ("set_tools", "Инструменты", "Ремесленный набор", "common", "box_common_mats", "forge"),
-            ("set_food", "Еда", "Сытный пир", "uncommon", "box_uncommon_cards", "tavern"),
-            ("set_alch", "Алхимия", "Тайные знания", "uncommon", "box_uncommon_cards", "crypt"),
-            ("set_beasts", "Звери", "Дикая природа", "uncommon", "box_uncommon_cards", "forest"),
-            ("set_weap", "Оружие", "Арсенал героя", "rare", "box_rare_weapon", "forge"),
-            ("set_stars", "Светила", "Небесный свод", "rare", "box_rare_armor", "temple"),
-            ("set_dark", "Тьма", "Порождения бездны", "rare", "box_rare_weapon", "crypt"),
-            ("set_myth", "Мифические", "Легенды Камарии", "epic", "box_epic_mix", "temple"),
-            ("set_royal", "Королевские", "Символы власти", "epic", "box_epic_mix", "castle"),
-            ("set_anom", "Аномалии", "Искажения ткани мира", "legendary", "box_leg_mix", "abyss")
-        ]
-        cursor.executemany("INSERT OR REPLACE INTO card_sets VALUES (?, ?, ?, ?, ?, ?)", sets_seed)
+        # Импортированные таблицы (карточки, предметы, локации, мобы)
+        cursor.executemany("INSERT OR REPLACE INTO card_sets VALUES (?, ?, ?, ?, ?, ?)", CARD_SETS)
+        cursor.executemany("INSERT OR REPLACE INTO cards VALUES (?, ?, ?, ?, ?)", CARDS)
+        cursor.executemany("INSERT OR REPLACE INTO loot_boxes VALUES (?, ?, ?, ?, ?, ?, ?)", LOOT_BOXES)
+        cursor.executemany("INSERT OR REPLACE INTO home_skins VALUES (?, ?, ?, ?, ?, ?)", HOME_SKINS)
+        cursor.executemany("INSERT OR IGNORE INTO solo_dungeons VALUES (?, ?, ?, ?, ?, ?, ?, ?)", SOLO_DUNGEONS)
         
-        cards_seed = [
-            ("c_carrot", "Морковь", "🥕", "set_veg", "common"), ("c_tomato", "Томат", "🍅", "set_veg", "common"), ("c_broccoli", "Брокколи", "🥦", "set_veg", "common"), ("c_corn", "Кукуруза", "🌽", "set_veg", "common"), ("c_cucumber", "Огурец", "🥒", "set_veg", "common"), ("c_onion", "Лук", "🧅", "set_veg", "common"),
-            ("c_apple", "Яблоко", "🍎", "set_fruit", "common"), ("c_banana", "Банан", "🍌", "set_fruit", "common"), ("c_grape", "Виноград", "🍇", "set_fruit", "common"), ("c_strawb", "Клубника", "🍓", "set_fruit", "common"), ("c_peach", "Персик", "🍑", "set_fruit", "common"), ("c_cherry", "Вишня", "🍒", "set_fruit", "common"),
-            ("c_hammer", "Молоток", "🔨", "set_tools", "common"), ("c_axe_tool", "Топор", "🪓", "set_tools", "common"), ("c_wrench", "Ключ", "🔧", "set_tools", "common"), ("c_saw", "Пила", "🪚", "set_tools", "common"), ("c_toolbox", "Ящик", "🧰", "set_tools", "common"), ("c_pickaxe", "Кирка", "⛏", "set_tools", "common"),
-            ("c_meat", "Мясо на кости", "🍖", "set_food", "uncommon"), ("c_chicken", "Окорочок", "🍗", "set_food", "uncommon"), ("c_steak", "Стейк", "🥩", "set_food", "uncommon"), ("c_burger", "Бургер", "🍔", "set_food", "uncommon"), ("c_pizza", "Пицца", "🍕", "set_food", "uncommon"), ("c_sandw", "Сэндвич", "🥪", "set_food", "uncommon"),
-            ("c_alembic", "Перегонный куб", "⚗️", "set_alch", "uncommon"), ("c_flask", "Колба", "🧪", "set_alch", "uncommon"), ("c_crystal", "Шар", "🔮", "set_alch", "uncommon"), ("c_scroll", "Свиток", "📜", "set_alch", "uncommon"), ("c_candle", "Свеча", "🕯", "set_alch", "uncommon"), ("c_amulet", "Амулет", "🧿", "set_alch", "uncommon"),
-            ("c_wolf", "Волк", "🐺", "set_beasts", "uncommon"), ("c_fox", "Лиса", "🦊", "set_beasts", "uncommon"), ("c_bear", "Медведь", "🐻", "set_beasts", "uncommon"), ("c_boar", "Кабан", "🐗", "set_beasts", "uncommon"), ("c_deer", "Олень", "🦌", "set_beasts", "uncommon"), ("c_snake", "Змея", "🐍", "set_beasts", "uncommon"),
-            ("c_swords", "Скрещенные мечи", "⚔️", "set_weap", "rare"), ("c_dagger", "Кинжал", "🗡", "set_weap", "rare"), ("c_shield", "Щит", "🛡", "set_weap", "rare"), ("c_bow", "Лук", "🏹", "set_weap", "rare"), ("c_axe_weap", "Боевой топор", "🪓", "set_weap", "rare"), ("c_trident", "Трезубец", "🔱", "set_weap", "rare"),
-            ("c_sun", "Солнце", "☀️", "set_stars", "rare"), ("c_moon", "Месяц", "🌙", "set_stars", "rare"), ("c_star1", "Звезда", "⭐", "set_stars", "rare"), ("c_star2", "Сияние", "🌟", "set_stars", "rare"), ("c_star3", "Искры", "✨", "set_stars", "rare"), ("c_star4", "Метеорит", "💫", "set_stars", "rare"),
-            ("c_skull", "Череп", "💀", "set_dark", "rare"), ("c_ghost", "Призрак", "👻", "set_dark", "rare"), ("c_bat", "Летучая мышь", "🦇", "set_dark", "rare"), ("c_spider", "Паук", "🕷", "set_dark", "rare"), ("c_web", "Паутина", "🕸", "set_dark", "rare"), ("c_newmoon", "Новолуние", "🌑", "set_dark", "rare"),
-            ("c_dragon", "Дракон", "🐉", "set_myth", "epic"), ("c_unicorn", "Единорог", "🦄", "set_myth", "epic"), ("c_dragonhead", "Голова дракона", "🐲", "set_myth", "epic"), ("c_eagle", "Орел", "🦅", "set_myth", "epic"), ("c_fire", "Огонь", "🔥", "set_myth", "epic"), ("c_ice", "Лед", "❄", "set_myth", "epic"),
-            ("c_crown", "Корона", "👑", "set_royal", "epic"), ("c_gem", "Драгоценность", "💎", "set_royal", "epic"), ("c_trophy", "Кубок", "🏆", "set_royal", "epic"), ("c_medal", "Орден", "🎖", "set_royal", "epic"), ("c_gold_medal", "Медаль", "🥇", "set_royal", "epic"), ("c_fleur", "Лилия", "⚜", "set_royal", "epic"),
-            ("c_vortex", "Вихрь", "🌀", "set_anom", "legendary"), ("c_galaxy", "Галактика", "🌌", "set_anom", "legendary"), ("c_hole", "Дыра", "🕳", "set_anom", "legendary"), ("c_zap", "Разряд", "⚡", "set_anom", "legendary"), ("c_orb", "Сфера", "🔮", "set_anom", "legendary"), ("c_eye", "Око", "👁", "set_anom", "legendary")
-        ]
-        cursor.executemany("INSERT OR REPLACE INTO cards VALUES (?, ?, ?, ?, ?)", cards_seed)
-
-        boxes_seed = [
-            ("box_common_mats", "📦 Коробка Ингредиентов", "mats", "common", json.dumps({"count": 5, "gold": 300, "potions": 1}), 1, 100),
-            ("box_uncommon_cards", "🎴 Сундук Карточек", "cards", "uncommon", json.dumps({"count": 3}), 1, 100),
-            ("box_rare_weapon", "⚔️ Оружейный Ящик", "weapon", "rare", json.dumps({"count": 1, "gold": 1000}), 1, 100),
-            ("box_rare_armor", "🛡 Ящик Брони", "armor", "rare", json.dumps({"count": 1, "gold": 1000}), 1, 100),
-            ("box_epic_mix", "👑 Эпический Дар", "epic_mix", "epic", json.dumps({"equip_count": 2, "gold": 3000}), 1, 100),
-            ("box_leg_mix", "🌀 Аномальный Куб", "leg_mix", "legendary", json.dumps({"equip_count": 1, "gold": 7000, "gems": 10}), 1, 100)
-        ]
-        cursor.executemany("INSERT OR REPLACE INTO loot_boxes VALUES (?, ?, ?, ?, ?, ?, ?)", boxes_seed)
-        
-        skins = [
-            ("base", "Базовый шатер", "free", 0, "{}", "Треск костра и запах дыма стелется по округе. Палатка и небольшая телега ютятся в лесу у подножья многолетнего дуба."),
-            ("cozy_wood", "Уютная лесная хижина", "gold", 5000, "{}", "Запах свежеспиленного дерева и тепло из кирпичной печи наполняют эту добротную хижину умиротворением."),
-            ("painted_diorama", "Расписная диорама", "gems", 100, "{}", "Волшебное место с теплыми земляными тонами, словно сошедшее со страниц сказочной книги."),
-            ("khmer_ruins", "Руины кхмерского храма", "achievement", 0, json.dumps({"req_bosses": 20}), "Древние камни, оплетенные корнями огромного баньяна, хранят мистическое свечение и покой."),
-            ("aztec_ziggurat", "Ацтекский алтарь", "achievement", 0, json.dumps({"req_title": "Герой Камарии"}), "Замшелый камень с золотыми прожилками и отголоски древних барабанов сопровождают это величественное место."),
-            ("clan_fort", "Цитадель Братства", "achievement", 0, json.dumps({"req_clan_lvl": 20}), "Строгий каменный форт, украшенный клановыми стягами. Здесь пахнет сталью и победами.")
-        ]
-        cursor.executemany("INSERT OR REPLACE INTO home_skins VALUES (?, ?, ?, ?, ?, ?)", skins)
-
-        solo_dungeons_seed = [
-            ("forest", "🌲 Загадочный Лес", "Обычный лес с гоблинами и слизнями. (Отлично для новичков)", json.dumps(["poison_slime", "goblin_thief", "decay_treant"]), "decay_treant", 3, 5, json.dumps({"combat": 40, "puzzle": 30, "treasure": 20, "empty": 10})),
-            ("crypt", "💀 Забытый Склеп", "Мрачные катакомбы, полные нежити и древних загадок.", json.dumps(["skeleton_crossbow", "living_dead", "fallen_champion"]), "bone_dragon", 4, 6, json.dumps({"combat": 60, "puzzle": 10, "treasure": 20, "empty": 10})),
-            ("temple", "🏛️ Руины Храма", "Древние развалины с опасными ловушками и стражами.", json.dumps(["temple_guard", "living_idol", "khmer_priest"]), "golem_blacksmith", 5, 8, json.dumps({"combat": 50, "puzzle": 25, "treasure": 15, "empty": 10}))
-        ]
-        cursor.executemany("INSERT OR IGNORE INTO solo_dungeons VALUES (?, ?, ?, ?, ?, ?, ?, ?)", solo_dungeons_seed)
-
-        war_regions_seed = [
-            (1, "🔥 Долина Пепла", "Выжженная земля под властью огненных демонов.", 100000, 0, 0, "fire_lord", json.dumps(["magma_slime", "cultist_fanatic"])),
-            (2, "🌲 Шепчущий Лес", "Оскверненная древняя чаща, полная яда и гнили.", 100000, 0, 0, "decay_treant", json.dumps(["poison_slime", "decay_treant"])),
-            (3, "❄️ Ледяные Пики", "Морозные перевалы, скованные ледяными воинами.", 100000, 0, 0, "arena_berserk", json.dumps(["skeleton_crossbow", "living_idol"])),
-            (4, "🍄 Забытые Болота", "Гиблое место гнездования гигантской паучихи.", 100000, 0, 0, "spider_queen", json.dumps(["poison_slime", "goblin_thief"])),
-            (5, "🌑 Пустоши Бездны", "Разлом мира, откуда вырываются порождения Тьмы.", 100000, 0, 0, "abyss_priest", json.dumps(["cultist_fanatic", "magic_anomaly"])),
-            (6, "⚡ Цитадель Бурь", "Высокогорный бастион с грозовыми големами.", 100000, 0, 0, "golem_blacksmith", json.dumps(["temple_guard", "magic_anomaly"])),
-            (7, "👑 Бастион Королей", "Сердце Камарии, захваченное Костяным Драконом.", 100000, 0, 0, "bone_dragon", json.dumps(["fallen_champion", "skeleton_crossbow"]))
-        ]
-        for w in war_regions_seed:
+        for w in WAR_REGIONS:
             try: cursor.execute("INSERT OR IGNORE INTO war_regions (region_id, name, desc, target_clears, current_clears, is_liberated, boss_id, mobs) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", w)
             except: pass
-
-        mobs = [
-            ("temple_guard", "Храмовый Страж", 55, 75, 12, 18, "front", json.dumps({"counter": 0.25, "weak": ["shock"]}), 6, 14, 12),
-            ("living_idol", "Оживший Идол", 80, 110, 14, 22, "front", json.dumps({"heal": 0.15, "immune": ["bleed", "poison"], "resist": ["physical"], "weak": ["shock"]}), 8, 18, 16),
-            ("khmer_priest", "Кхмерский Жрец", 45, 60, 18, 28, "back", json.dumps({"dodge": 0.2, "reposition": 0.6, "weak": ["dark"]}), 10, 22, 15),
-            ("poison_slime", "Токсичный Слизень", 35, 50, 8, 14, "front", json.dumps({"poison": 0.35, "immune": ["poison", "bleed"], "weak": ["fire", "ice"]}), 4, 10, 10),
-            ("skeleton_crossbow", "Скелет-арбалетчик", 40, 55, 16, 24, "back", json.dumps({"dodge": 0.15, "reposition": 0.7, "immune": ["poison", "bleed"], "weak": ["light", "fire"]}), 6, 15, 12),
-            ("living_dead", "Оживший Мертвец", 60, 80, 10, 16, "front", json.dumps({"poison": 0.15, "immune": ["poison", "bleed"], "weak": ["light", "fire"]}), 5, 12, 11),
-            ("magma_slime", "Магматический Слизень", 65, 85, 16, 24, "front", json.dumps({"burn": 0.3, "immune": ["fire", "poison", "bleed"], "weak": ["ice"]}), 8, 16, 15),
-            ("golem_blacksmith", "Голем-кузнец", 110, 140, 20, 30, "front", json.dumps({"counter": 0.35, "immune": ["poison", "bleed"], "resist": ["physical", "fire"], "weak": ["shock"]}), 12, 25, 22),
-            ("decay_treant", "Гнилой Энт", 95, 130, 15, 25, "front", json.dumps({"heal": 0.2, "poison": 0.2, "immune": ["poison"], "weak": ["fire"]}), 10, 20, 18),
-            ("magic_anomaly", "Магическая Аномалия", 50, 70, 22, 35, "back", json.dumps({"dodge": 0.25, "immune": ["bleed"], "resist": ["dark", "shock"]}), 12, 24, 20),
-            ("time_mimic", "Мимик-часовщик", 70, 95, 18, 26, "front", json.dumps({"counter": 0.2, "immune": ["bleed"], "weak": ["shock"]}), 15, 30, 25),
-            ("cultist_fanatic", "Культист-фанатик", 60, 80, 20, 32, "back", json.dumps({"burn": 0.2, "resist": ["dark"], "weak": ["light"]}), 10, 20, 18),
-            ("goblin_thief", "Гоблин-вор", 40, 55, 12, 20, "front", json.dumps({"dodge": 0.35, "reposition": 0.8, "weak": ["poison"]}), 18, 40, 15),
-            ("golden_mimic", "Золотой Мимик", 120, 160, 22, 34, "front", json.dumps({"counter": 0.3, "immune": ["poison", "bleed"], "weak": ["shock"]}), 45, 90, 40),
-            ("fallen_champion", "Падший Чемпион", 100, 130, 24, 38, "front", json.dumps({"counter": 0.3, "weak": ["light"]}), 15, 30, 30),
-            ("arena_berserk", "Берсерк Арены", 85, 115, 28, 45, "front", json.dumps({"burn": 0.15, "weak": ["ice"]}), 14, 28, 28),
-            ("time_keeper", "Хранитель Времени", 180, 220, 22, 34, "back", json.dumps({"dodge": 0.15, "reposition": 0.5, "resist": ["shock"], "weak": ["dark"]}), 45, 75, 80),
-            ("spider_queen", "Королева Пауков", 220, 270, 24, 36, "back", json.dumps({"poison": 0.5, "dodge": 0.2, "immune": ["poison"], "weak": ["fire"]}), 50, 85, 95),
-            ("fire_lord", "Лорд Огня", 280, 340, 30, 44, "front", json.dumps({"burn": 0.45, "counter": 0.2, "immune": ["fire"], "weak": ["ice"]}), 70, 110, 120),
-            ("bone_dragon", "Костяной Дракон", 340, 420, 35, 52, "front", json.dumps({"counter": 0.25, "heal": 0.1, "immune": ["poison", "bleed"], "weak": ["light", "fire"]}), 90, 140, 160),
-            ("abyss_priest", "Жрец Бездны", 240, 300, 28, 42, "back", json.dumps({"dodge": 0.2, "heal": 0.2, "immune": ["dark"], "weak": ["light"]}), 60, 95, 110),
-            ("greed_spirit", "Дух Алчности", 260, 320, 26, 40, "front", json.dumps({"dodge": 0.25, "counter": 0.2, "immune": ["bleed"], "weak": ["dark", "light"]}), 100, 180, 130),
-            ("arena_champ", "Чемпион Колизея", 320, 390, 34, 50, "front", json.dumps({"counter": 0.35, "resist": ["physical"], "weak": ["poison", "ice"]}), 80, 130, 150)
-        ]
-        cursor.executemany("INSERT OR REPLACE INTO bestiary VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", mobs)
-
-        daily_dungeons = [
-            (0, "💀 Склеп Нежити", "Склеп, наполненный древней тьмой.", json.dumps(["skeleton_crossbow", "living_dead"]), "bone_marrow", "Костный мозг", "bone_dragon", 1.1),
-            (1, "🌋 Пылающая Кузня", "Реки лавы и раскаленные наковальни.", json.dumps(["magma_slime", "golem_blacksmith"]), "fire_root", "Магматическое ядро", "fire_lord", 1.2),
-            (2, "🍄 Топи Забвения", "Ядовитые испарения и топкая грязь.", json.dumps(["poison_slime", "decay_treant"]), "poison_gland", "Ядовитая железа", "spider_queen", 1.1),
-            (3, "⏳ Временные Руины", "Место, где искривляются секунды.", json.dumps(["magic_anomaly", "time_mimic"]), "time_tear", "Слеза времени", "time_keeper", 1.0),
-            (4, "🩸 Темные Катакомбы", "Шепот сектантов и кровавые алтари.", json.dumps(["cultist_fanatic", "living_dead"]), "demon_blood", "Кровь демона", "abyss_priest", 1.25),
-            (5, "🏜 Золотой Мираж", "Пески скрывают иллюзорные богатства.", json.dumps(["goblin_thief", "golden_mimic"]), "gold_petal", "Золотой лепесток", "greed_spirit", 1.15),
-            (6, "⚔️ Кровавый Колизей", "Арена для сильнейших воинов.", json.dumps(["fallen_champion", "arena_berserk"]), "epic_token", "Эпический жетон", "arena_champ", 1.35)
-        ]
-        for d in daily_dungeons:
+            
+        cursor.executemany("INSERT OR REPLACE INTO bestiary VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", BESTIARY)
+        
+        for d in DAILY_DUNGEONS:
             try: cursor.execute("INSERT OR IGNORE INTO daily_dungeons (day_index, name, desc, mobs, loot_id, loot_name, boss_id, mob_modifier) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", d)
             except: pass
             
         cursor.executemany("INSERT OR REPLACE INTO alchemy_ingredients VALUES (?, ?, ?, ?)", INGREDIENTS)
-
-        # Выносим арсенал в отдельный файл
         cursor.executemany("INSERT OR REPLACE INTO items VALUES (?, ?, ?, ?, ?)", ITEMS)
-
-        recipes = [
-            ("rec_iron_sword", "iron_sword", json.dumps({"iron_ingot": 6}), 120),
-            ("rec_chainmail", "chainmail", json.dumps({"iron_ingot": 12}), 150),
-            ("rec_steel_plate", "steel_plate", json.dumps({"iron_ingot": 18}), 1800),
-            ("rec_steel_greatsword", "steel_greatsword", json.dumps({"iron_ingot": 16}), 1000),
-            ("rec_smoke_bomb", "smoke_bomb", json.dumps({"iron_ingot": 1, "poison_gland": 1}), 50),
-            ("rec_shrapnel_bomb", "shrapnel_bomb", json.dumps({"iron_ingot": 2, "fire_root": 1}), 80),
-            ("rec_scroll_weakness", "scroll_weakness", json.dumps({"bone_marrow": 1, "demon_blood": 1}), 120),
-            ("rec_time_hourglass", "time_hourglass", json.dumps({"time_tear": 2, "gold_petal": 1}), 350)
-        ]
-        cursor.executemany("INSERT OR REPLACE INTO recipes VALUES (?, ?, ?, ?)", recipes)
+        cursor.executemany("INSERT OR REPLACE INTO recipes VALUES (?, ?, ?, ?)", RECIPES)
         
-        # Добавление реликвий в таблицу дропа для боссов
-        relic_drops = [
-            ("solo", "art_cursed_blade", 0.05, 1, 1),
-            ("solo", "art_frost_mourne", 0.03, 1, 1),
-            ("solo", "art_thunder_fury", 0.02, 1, 1),
-            ("solo", "art_blood_drinker", 0.01, 1, 1),
-            ("event_6", "art_world_breaker", 0.01, 1, 1),
-            
-            # Дроп эксклюзивных артефактов
-            ("solo", "art_dragon_heart", 0.04, 1, 1),
-            ("solo", "art_shadow_cloak", 0.04, 1, 1),
-            ("solo", "art_demonic_pact", 0.03, 1, 1),
-            ("solo", "art_aegis_shard", 0.02, 1, 1),
-            ("event_6", "art_blood_stone", 0.02, 1, 1)
-        ]
-        cursor.executemany("INSERT OR IGNORE INTO loot_tables (location_id, item_id, chance, min_amount, max_amount) VALUES (?, ?, ?, ?, ?)", relic_drops)
+        # Обновление таблиц лута
+        cursor.execute("DELETE FROM loot_tables")
+        cursor.executemany("INSERT INTO loot_tables (location_id, item_id, chance, min_amount, max_amount) VALUES (?, ?, ?, ?, ?)", LOOT_TABLES)
         
         conn.commit()
-        
         seed_bots()
 
 def give_item(user_id: int, item_id: str, item_type: str, amount: int = 1):
@@ -750,14 +619,9 @@ def calculate_damage_received(raw_dmg: int, def_val: int) -> int:
 def get_scaled_mob(mob_id: str, player_lvl: int = 1) -> dict:
     mob = get_mob_by_name(mob_id).copy()
     if player_lvl > 3:
-        # Базовый скейл
         scale = 1.0 + (player_lvl - 3) * 0.08
-        
-        # Хардкор-скейл для высоких уровней (экспонента)
-        if player_lvl >= 30:
-            scale += (player_lvl - 30) * 0.05
-        if player_lvl >= 50:
-            scale += (player_lvl - 50) * 0.15 # Очень сильный буст для 50+
+        if player_lvl >= 30: scale += (player_lvl - 30) * 0.05
+        if player_lvl >= 50: scale += (player_lvl - 50) * 0.15
 
         mob['hp_min'] = int(mob['hp_min'] * scale)
         mob['hp_max'] = int(mob['hp_max'] * scale)
@@ -767,12 +631,10 @@ def get_scaled_mob(mob_id: str, player_lvl: int = 1) -> dict:
         mob['gold_max'] = int(mob.get('gold_max', 15) * scale)
         mob['xp_reward'] = int(mob.get('xp_reward', 10) * scale)
         
-        # Динамическое усиление навыков моба
-        skill_bonus = player_lvl * 0.005 # +0.5% к шансу за каждый уровень игрока
+        skill_bonus = player_lvl * 0.005 
         new_skills = {}
         for k, v in mob['skills'].items():
             if isinstance(v, (int, float)) and not isinstance(v, bool):
-                # Кап шанса на 80%, чтобы не было бесконечных уворотов
                 new_skills[k] = min(0.80, v + skill_bonus)
             else:
                 new_skills[k] = v
@@ -1242,8 +1104,6 @@ def roll_card(user_id: int, theme: str = None) -> dict:
         conn.commit()
         
         return {"card_id": card[0], "name": card[1], "emoji": card[2], "rarity": rarity}
-
-# --- ДОБАВЛЕННЫЕ ФУНКЦИИ ЛОГИРОВАНИЯ ---
 _analytics_buffer = []
 
 def log_event(user_id: int, category: str, event_type: str, value: int = 0, meta: dict = None):
@@ -1269,4 +1129,42 @@ def flush_logs():
             VALUES (?, ?, ?, ?, ?, ?)
         ''', logs_to_write)
         conn.commit()
+
+def get_item_sources(item_id: str) -> list[str]:
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT location_id, chance, min_amount, max_amount FROM loot_tables WHERE item_id = ?", (item_id,))
+        rows = cursor.fetchall()
+        
+        if not rows:
+            return ["Секретное место (или нигде)"]
+            
+        cursor.execute("SELECT id, name FROM solo_dungeons")
+        solo_map = {r[0]: r[1] for r in cursor.fetchall()}
+        
+        cursor.execute("SELECT day_index, name FROM daily_dungeons")
+        daily_map = {str(r[0]): r[1] for r in cursor.fetchall()}
+        
+        cursor.execute("SELECT region_id, name FROM war_regions")
+        war_map = {str(r[0]): r[1] for r in cursor.fetchall()}
+        
+    sources = []
+    for loc, chance, mn, mx in rows:
+        loc_name = loc
+        if loc in solo_map:
+            loc_name = solo_map[loc]
+        elif loc in daily_map:
+            loc_name = daily_map[loc]
+        elif loc in war_map:
+            loc_name = war_map[loc]
+        elif loc == "solo":
+            loc_name = "Одиночные Боссы"
+        elif loc == "event_6" or loc == "6":
+            loc_name = "Ивент: Кровавый Колизей"
+            
+        pct = int(chance * 100) if chance >= 0.01 else "<1"
+        amount_str = f"{mn}" if mn == mx else f"{mn}-{mx}"
+        sources.append(f"{loc_name} ({pct}%, {amount_str} шт.)")
+        
+    return list(set(sources))
 

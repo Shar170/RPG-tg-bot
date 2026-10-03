@@ -20,23 +20,27 @@ def get_combat_kb(ap: int, distance: str):
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def render_effects_badge(combat: dict) -> str:
-    badges = []
-    if combat.get('buff_armor', 0) > 0: badges.append(f"🛡️ Броня +{combat['buff_armor']} ({combat.get('buff_armor_t', 1)}х)")
-    if combat.get('buff_str', 0) > 0: badges.append(f"⚔️ Сила +{combat['buff_str']} ({combat.get('buff_str_t', 1)}х)")
-    if combat.get('buff_dodge', 0) > 0: badges.append(f"💨 Уворот +{int(combat['buff_dodge']*100)}% ({combat.get('buff_dodge_t', 1)}х)")
-    if combat.get('debuff_blind', 0) > 0: badges.append(f"👁️ Слепота ({combat['debuff_blind']}х)")
-    if combat.get('debuff_fragile', 0) > 0: badges.append(f"💔 Хрупкость ({combat['debuff_fragile']}х)")
-    if combat.get('debuff_vuln', 0) > 0: badges.append(f"🎯 Уязвимость +25% ({combat['debuff_vuln']}х)")
+def get_combat_effects(combat: dict) -> tuple[str, str]:
+    p_badges = []
+    e_badges = []
     
-    if combat.get('enemy_blind', 0) > 0: badges.append(f"👁️ Враг ослеплен ({combat['enemy_blind']}х)")
-    if combat.get('enemy_vuln', 0) > 0: badges.append(f"🎯 Враг уязвим ({combat['enemy_vuln']}х)")
-    if combat.get('dot_burn', 0) > 0: badges.append(f"🔥 Горение ({combat['dot_burn']}х)")
-    if combat.get('dot_poison', 0) > 0: badges.append(f"🟢 Отравление ({combat['dot_poison']}х)")
-    if combat.get('dot_bleed', 0) > 0: badges.append(f"🩸 Кровотечение ({combat['dot_bleed']}х)")
-    if combat.get('enemy_stun', 0) > 0: badges.append(f"💫 Враг оглушен ({combat['enemy_stun']}х)")
+    if combat.get('buff_armor', 0) > 0: p_badges.append(f"🛡️ Броня +{combat['buff_armor']} ({combat.get('buff_armor_t', 1)}х)")
+    if combat.get('buff_str', 0) > 0: p_badges.append(f"⚔️ Сила +{combat['buff_str']} ({combat.get('buff_str_t', 1)}х)")
+    if combat.get('buff_dodge', 0) > 0: p_badges.append(f"💨 Уворот +{int(combat['buff_dodge']*100)}% ({combat.get('buff_dodge_t', 1)}х)")
+    if combat.get('debuff_blind', 0) > 0: p_badges.append(f"👁️️ Слепота ({combat['debuff_blind']}х)")
+    if combat.get('debuff_fragile', 0) > 0: p_badges.append(f"💔 Хрупкость ({combat['debuff_fragile']}х)")
+    if combat.get('debuff_vuln', 0) > 0: p_badges.append(f"🎯 Уязвимость +25% ({combat['debuff_vuln']}х)")
+    
+    if combat.get('enemy_blind', 0) > 0: e_badges.append(f"👁️ Ослеплен ({combat['enemy_blind']}х)")
+    if combat.get('enemy_vuln', 0) > 0: e_badges.append(f"🎯 Уязвим ({combat['enemy_vuln']}х)")
+    if combat.get('dot_burn', 0) > 0: e_badges.append(f"🔥 Горение ({combat['dot_burn']}х)")
+    if combat.get('dot_poison', 0) > 0: e_badges.append(f"🟢 Отравление ({combat['dot_poison']}х)")
+    if combat.get('dot_bleed', 0) > 0: e_badges.append(f"🩸 Кровотечение ({combat['dot_bleed']}х)")
+    if combat.get('enemy_stun', 0) > 0: e_badges.append(f"💫 Оглушен ({combat['enemy_stun']}х)")
 
-    return " | ".join(badges) if badges else "Нет"
+    p_text = " | ".join(p_badges) if p_badges else "Нет"
+    e_text = " | ".join(e_badges) if e_badges else "Нет"
+    return p_text, e_text
 
 async def render_combat(callback: CallbackQuery, user: dict, combat: dict, log_msg: str):
     dist_str = "УПОР (Ближний бой)" if combat.get('distance', 'close') == "close" else "ИЗДАЛЕКА (Дальний бой)"
@@ -44,18 +48,29 @@ async def render_combat(callback: CallbackQuery, user: dict, combat: dict, log_m
     enemy_name = combat.get('enemy_name', 'Враг')
     enemy_hp = combat.get('enemy_hp', 50)
     enemy_max = combat.get('enemy_max_hp', 50)
-    effects_text = render_effects_badge(combat)
+    p_effects, e_effects = get_combat_effects(combat)
 
-    text = (f"⚔️ **Бой: {enemy_name}**\n❤️ Враг: {enemy_hp}/{enemy_max} HP\n━━━━━━━━━━━━━━\n"
-            f"👤 Вы: {user['hp']}/{user['max_hp']} HP\n📏 Дистанция: **{dist_str}**\n⚡ ОД: {ap_icons}\n"
-            f"✨ **Эффекты:** {effects_text}\n\n💬 *{log_msg}*")
+    text = (f"⚔️ **Бой: {enemy_name}**\n"
+            f"❤️ Враг: {enemy_hp}/{enemy_max} HP\n"
+            f"✨ Эффекты врага: {e_effects}\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"👤 Вы: {user['hp']}/{user['max_hp']} HP\n"
+            f"📏 Дистанция: **{dist_str}**\n"
+            f"⚡ ОД: {ap_icons}\n"
+            f"✨ Ваши эффекты: {p_effects}\n\n"
+            f"💬 *{log_msg}*")
     await callback.message.edit_text(text, reply_markup=get_combat_kb(combat.get('ap', 3), combat.get('distance', 'close')), parse_mode="Markdown")
 
 async def handle_combat_victory(callback: CallbackQuery, user_id: int, combat: dict):
     fresh_user = get_user(user_id)
     inv = fresh_user['inventory']
     dungeon_data = fresh_user.get('dungeon_data', {})
-    location_id = f"event_{datetime.datetime.today().weekday()}" if dungeon_data.get('dungeon_type', 'solo') == "event" else "solo"
+    
+    if dungeon_data.get('dungeon_type', 'solo') == "event":
+        location_id = f"event_{datetime.datetime.today().weekday()}"
+    else:
+        location_id = dungeon_data.get('location_id', 'solo')
+        
     is_boss = not dungeon_data.get("nodes", {}).get(dungeon_data.get("current_node"), {}).get("next")
 
     home = fresh_user.get('home_data', {})
@@ -261,7 +276,7 @@ async def combat_move(callback: CallbackQuery):
         log_msg = "🏃 Вы разорвали дистанцию! Теперь вы далеко."
     else:
         combat['distance'] = "close"
-        log_msg = "⚔️️ Вы бросились вперед! Ближний бой."
+        log_msg = "⚔ Вы бросились вперед! Ближний бой."
     update_user(user['user_id'], combat_data=combat)
     await render_combat(callback, user, combat, log_msg)
 
@@ -345,7 +360,7 @@ async def combat_end_turn(callback: CallbackQuery):
         apply_death_penalty(user['user_id'], user.get('dungeon_data', {}))
         update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
         from handlers.town import get_town_kb
-        return await callback.message.edit_text("☠️️ **Вы убиты!** Все собранные вещи утеряны.", reply_markup=get_town_kb(user), parse_mode="Markdown")
+        return await callback.message.edit_text("☠ **Вы убиты!** Все собранные вещи утеряны.", reply_markup=get_town_kb(user), parse_mode="Markdown")
 
     combat['ap'] = 3
     if 'coop_host' in combat:
@@ -519,7 +534,7 @@ async def execute_drink_combat(callback: CallbackQuery):
 @router.callback_query(F.data == "combat_act_flee")
 async def combat_flee(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏃‍♂️️ ДА, СБЕЖАТЬ", callback_data="combat_act_flee_confirm")],
+        [InlineKeyboardButton(text="🏃‍♂ ДА, СБЕЖАТЬ", callback_data="combat_act_flee_confirm")],
         [InlineKeyboardButton(text="❌ НЕТ, ОСТАТЬСЯ", callback_data="combat_act_flee_cancel")]
     ])
     await callback.message.edit_text("⚠️ **Вы уверены?**\nПри побеге вы потеряете часть золота и лута из этого рейда!", reply_markup=kb, parse_mode="Markdown")

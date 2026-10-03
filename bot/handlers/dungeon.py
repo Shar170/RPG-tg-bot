@@ -104,6 +104,7 @@ async def enter_solo_dungeon(callback: CallbackQuery):
         room_weights=dungeon.get('room_weights')
     )
     
+    d_data['location_id'] = d_id
     update_user(user['user_id'], state='STATE_DUNGEON', dungeon_data=d_data)
     await enter_node(callback, user, d_data, d_data["current_node"])
 
@@ -417,13 +418,9 @@ async def enter_node(callback: CallbackQuery, user: dict, d_data: dict, node_id:
         await callback.message.edit_text(p_data["text"], reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
         
     else:
-        # Fallback блок для любых неизвестных типов комнат
         track_stat(user['user_id'], 'empty_rooms', 1)
         text = "💨 **Неизведанный проход.** Вы оглядываетесь, но здесь ничего нет.\n\nПродолжайте путь:"
         await callback.message.edit_text(text, reply_markup=get_navigation_kb(d_data), parse_mode="Markdown")
-
-
-# --- ОБРАБОТЧИКИ НОВЫХ КОМНАТ ---
 
 @router.callback_query(F.data == "dungeon_sleep_sneak")
 async def sleep_sneak(callback: CallbackQuery):
@@ -528,8 +525,6 @@ async def pris_leave(callback: CallbackQuery):
     text = "🚶 Вы решили не вмешиваться и прошли мимо, проигнорировав мольбы пленника.\n\nКуда дальше?"
     await callback.message.edit_text(text, reply_markup=get_navigation_kb(d_data), parse_mode="Markdown")
 
-
-# --- ОБРАБОТКА ЛОВУШЕК И ЗАГАДОК ---
 @router.callback_query(F.data.startswith("trap_dodge_"))
 async def trap_dodge(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
