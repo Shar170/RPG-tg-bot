@@ -26,6 +26,7 @@ def ensure_user(user_id: int, username: str):
 
 def get_town_kb(user: dict) -> InlineKeyboardMarkup:
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📖 Сюжетный режим", callback_data="town_story_enter")],
         [InlineKeyboardButton(text="⚔️ Экспедиции", callback_data="town_dungeon_menu"),
          InlineKeyboardButton(text="🏟️ Арена (PvP)", callback_data="town_arena")],
         [InlineKeyboardButton(text="🎒 Инвентарь", callback_data="inv_open"),
@@ -83,7 +84,7 @@ def generate_town_text(user: dict) -> str:
         f"🏕️ **Лагерь Искателей (Камария)**\n\n"
         f"👤 **{user['username']}** | Ур. {lvl}\n"
         f"🌟 Опыт: `{xp_bar}` {xp}/{max_xp} XP\n"
-        f"❤️ ХП: {user['hp']}/{user['max_hp']} | ⚡ ОД: {user.get('energy', 5)}/{max_energy}\n"
+        f"❤️️ ХП: {user['hp']}/{user['max_hp']} | ⚡ ОД: {user.get('energy', 5)}/{max_energy}\n"
         f"💰 Золото: {user.get('gold', 0)} 🪙 | 💎 Кристаллы: {user.get('gems', 0)} 💎"
         f"{clan_str}"
         f"{clans_text}"

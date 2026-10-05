@@ -27,7 +27,7 @@ def get_combat_effects(combat: dict) -> tuple[str, str]:
     if combat.get('buff_armor', 0) > 0: p_badges.append(f"🛡️ Броня +{combat['buff_armor']} ({combat.get('buff_armor_t', 1)}х)")
     if combat.get('buff_str', 0) > 0: p_badges.append(f"⚔️ Сила +{combat['buff_str']} ({combat.get('buff_str_t', 1)}х)")
     if combat.get('buff_dodge', 0) > 0: p_badges.append(f"💨 Уворот +{int(combat['buff_dodge']*100)}% ({combat.get('buff_dodge_t', 1)}х)")
-    if combat.get('debuff_blind', 0) > 0: p_badges.append(f"👁️️ Слепота ({combat['debuff_blind']}х)")
+    if combat.get('debuff_blind', 0) > 0: p_badges.append(f"👁 Слепота ({combat['debuff_blind']}х)")
     if combat.get('debuff_fragile', 0) > 0: p_badges.append(f"💔 Хрупкость ({combat['debuff_fragile']}х)")
     if combat.get('debuff_vuln', 0) > 0: p_badges.append(f"🎯 Уязвимость +25% ({combat['debuff_vuln']}х)")
     
@@ -63,6 +63,14 @@ async def render_combat(callback: CallbackQuery, user: dict, combat: dict, log_m
 
 async def handle_combat_victory(callback: CallbackQuery, user_id: int, combat: dict):
     fresh_user = get_user(user_id)
+    
+    if combat.get('is_story'):
+        win_node = combat.get('win_node')
+        update_user(user_id, state='STATE_STORY', combat_data={})
+        from handlers.story import render_story_node
+        await callback.answer("Враг повержен! Сюжет продолжается.")
+        return await render_story_node(callback, fresh_user, win_node)
+        
     inv = fresh_user['inventory']
     dungeon_data = fresh_user.get('dungeon_data', {})
     
@@ -90,7 +98,6 @@ async def handle_combat_victory(callback: CallbackQuery, user_id: int, combat: d
     mod = combat.get('mob_modifier', 1.0)
     reward_gold = int(random.randint(combat.get('gold_min', 5), combat.get('gold_max', 15)) * mod)
     
-    # --- БОНУС ОТ ПЛЕННИКА ---
     gained_xp = int(combat.get('xp_reward', 10) * mod)
     if is_boss and dungeon_data.get('saved_prisoner'):
         bonus_xp = fresh_user.get('level', 1) * 35
@@ -230,9 +237,7 @@ async def combat_attack(callback: CallbackQuery):
             log_msg = f"💨 {enemy_name} увернулся от атаки!"
         else:
             enemy_hp -= dmg
-            
             log_event(user['user_id'], 'combat', 'damage_dealt', dmg, {'enemy': enemy_name, 'weapon_id': weapon_id})
-            
             log_msg = f"Вы нанесли {dmg} урона!"
             if extra_str > 0: log_msg += f" (Сила +{extra_str})"
             if combat.get('enemy_vuln', 0) > 0: log_msg += " (Уязвимость врага)"
@@ -241,14 +246,20 @@ async def combat_attack(callback: CallbackQuery):
             if enemy_hp > 0 and random.random() < mob_skills.get("counter", 0):
                 counter_dmg = int(dmg * 0.5)
                 user['hp'] -= counter_dmg
-                
                 log_event(user['user_id'], 'combat', 'damage_taken', -counter_dmg, {'enemy': enemy_name, 'source': 'counter'})
-                
                 log_msg += f"\n⚔️ Враг контратакует! (-{counter_dmg} ХП)"
+                
                 if user['hp'] <= 0:
                     log_event(user['user_id'], 'combat', 'death', 0, {'enemy': enemy_name, 'dungeon_type': user.get('dungeon_data', {}).get('dungeon_type')})
-                    
                     track_stat(user['user_id'], 'deaths_count', 1)
+                    
+                    if combat.get('is_story'):
+                        lose_node = combat.get('lose_node')
+                        update_user(user['user_id'], state='STATE_STORY', combat_data={}, hp=max(1, int(user['max_hp'] * 0.1))) 
+                        from handlers.story import render_story_node
+                        await callback.answer("Вас одолели...", show_alert=True)
+                        return await render_story_node(callback, user, lose_node)
+                        
                     apply_death_penalty(user['user_id'], user.get('dungeon_data', {}))
                     update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
                     from handlers.town import get_town_kb
@@ -337,9 +348,7 @@ async def combat_end_turn(callback: CallbackQuery):
 
             monster_dmg = calculate_damage_received(raw_dmg, total_armor)
             user['hp'] -= monster_dmg
-            
             log_event(user['user_id'], 'combat', 'damage_taken', -monster_dmg, {'enemy': enemy_name, 'source': 'attack'})
-            
             log_parts.append(f"Враг ударил на {monster_dmg} урона.")
 
             if random.random() < mob_skills.get('poison', 0):
@@ -355,8 +364,15 @@ async def combat_end_turn(callback: CallbackQuery):
 
     if user['hp'] <= 0:
         log_event(user['user_id'], 'combat', 'death', 0, {'enemy': enemy_name, 'dungeon_type': user.get('dungeon_data', {}).get('dungeon_type')})
-        
         track_stat(user['user_id'], 'deaths_count', 1)
+        
+        if combat.get('is_story'):
+            lose_node = combat.get('lose_node')
+            update_user(user['user_id'], state='STATE_STORY', combat_data={}, hp=max(1, int(user['max_hp'] * 0.1))) 
+            from handlers.story import render_story_node
+            await callback.answer("Вас одолели...", show_alert=True)
+            return await render_story_node(callback, user, lose_node)
+            
         apply_death_penalty(user['user_id'], user.get('dungeon_data', {}))
         update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
         from handlers.town import get_town_kb
@@ -519,8 +535,15 @@ async def execute_drink_combat(callback: CallbackQuery):
 
     if user['hp'] <= 0:
         log_event(user['user_id'], 'combat', 'death', 0, {'enemy': enemy_name, 'source': 'potion_side_effect', 'potion': used_item})
-        
         track_stat(user['user_id'], 'deaths_count', 1)
+        
+        if combat.get('is_story'):
+            lose_node = combat.get('lose_node')
+            update_user(user['user_id'], state='STATE_STORY', combat_data={}, hp=max(1, int(user['max_hp'] * 0.1))) 
+            from handlers.story import render_story_node
+            await callback.answer("Вас одолели...", show_alert=True)
+            return await render_story_node(callback, user, lose_node)
+            
         apply_death_penalty(user['user_id'], user.get('dungeon_data', {}))
         update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
         from handlers.town import get_town_kb

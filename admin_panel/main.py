@@ -30,7 +30,7 @@ if not st.session_state['authenticated']:
                 st.rerun()
             else:
                 st.error("❌ Неверный пароль!")
-    st.stop() # Останавливает выполнение скрипта, если не авторизован
+    st.stop()
 
 # ==========================================
 # ФУНКЦИИ БАЗЫ ДАННЫХ
@@ -70,6 +70,19 @@ def get_conn():
         id TEXT PRIMARY KEY, name TEXT, desc TEXT, mobs TEXT, boss_id TEXT, 
         min_rooms INTEGER DEFAULT 3, max_rooms INTEGER DEFAULT 5, 
         room_weights TEXT DEFAULT '{"combat": 40, "puzzle": 30, "treasure": 20, "empty": 10}')''')
+
+    # ТАБЛИЦЫ СЮЖЕТА
+    conn.execute('''CREATE TABLE IF NOT EXISTS stories (
+        id TEXT PRIMARY KEY, title TEXT, desc TEXT, req_admin INTEGER DEFAULT 0, start_node_id TEXT DEFAULT 'node_start')''')
+    try: conn.execute("ALTER TABLE stories ADD COLUMN start_node_id TEXT DEFAULT 'node_start'")
+    except sqlite3.OperationalError: pass
+    
+    conn.execute('''CREATE TABLE IF NOT EXISTS story_chapters (
+        id TEXT PRIMARY KEY, story_id TEXT, title TEXT)''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS story_nodes (
+        id TEXT PRIMARY KEY, chapter_id TEXT, node_type TEXT, text TEXT, extra_data TEXT DEFAULT '{}')''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS story_choices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, node_id TEXT, text TEXT, req_cond TEXT DEFAULT '{}', action_data TEXT DEFAULT '{}', next_node_id TEXT)''')
 
     conn.commit()
     return conn
@@ -151,7 +164,7 @@ with st.sidebar:
 # ОСНОВНОЙ ИНТЕРФЕЙС ВКЛАДОК
 # ==========================================
 st.title("🛡️ Kamaria RPG — Панель Управления")
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
     "🦇 Бестиарий", 
     "👥 Игроки", 
     "🏰 Кланы",
@@ -161,7 +174,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
     "💾 Экспорт SQL",
     "🏡 Скины Дома",
     "🎴 Коллекции",
-    "📈 Аналитика"
+    "📈 Аналитика",
+    "🎭 Сюжеты"
 ])
 
 # --- ВКЛАДКА 1: БЕСТИАРИЙ ---
@@ -514,7 +528,11 @@ with tab6:
         "war_regions": "region_id",
         "card_sets": "set_id",
         "cards": "card_id",
-        "loot_boxes": "box_id"
+        "loot_boxes": "box_id",
+        "stories": "id",
+        "story_chapters": "id",
+        "story_nodes": "id",
+        "story_choices": "id"
     }
     table_to_edit = st.selectbox("Таблица:", list(pks.keys()))
     df = fetch_table(table_to_edit)
@@ -542,7 +560,7 @@ with tab7:
         ]
     )
 
-    if st.button("⚙️ Сгенерировать SQL скрипт"):
+    if st.button("⚙️️ Сгенерировать SQL скрипт"):
         with get_conn() as conn:
             dump_lines = []
             
@@ -653,56 +671,39 @@ with tab10:
     try:
         logs_df = fetch_table("analytics_logs")
         if not logs_df.empty:
-            # Преобразуем UNIX timestamp в читаемый формат времени
             logs_df['Время'] = pd.to_datetime(logs_df['timestamp'], unit='s')
-            # Сортируем от новых к старым
             logs_df = logs_df.sort_values(by='timestamp', ascending=False)
             
-            # --- Блок фильтров ---
             st.markdown("### 🔍 Фильтры")
             col_f1, col_f2, col_f3 = st.columns(3)
             
-            # Фильтр по категориям
             all_cats = logs_df['event_category'].dropna().unique().tolist()
             selected_cats = col_f1.multiselect("Категория (event_category):", all_cats, default=all_cats)
-            
-            # Фильтр по ID игрока
             search_uid = col_f2.text_input("ID игрока (user_id):", placeholder="Например: 12345678")
-            
-            # Фильтр по типу события
             search_event = col_f3.text_input("Тип события (event_type):", placeholder="Например: damage_dealt")
             
-            # Применение фильтров
             filtered_df = logs_df[logs_df['event_category'].isin(selected_cats)]
-            
             if search_uid.strip().isdigit():
                 filtered_df = filtered_df[filtered_df['user_id'] == int(search_uid.strip())]
-                
             if search_event.strip():
                 filtered_df = filtered_df[filtered_df['event_type'].str.contains(search_event.strip(), case=False, na=False)]
             
-            # --- Вывод метрик ---
             st.markdown("### 📊 Сводка (по отфильтрованным данным)")
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Всего записей", f"{len(filtered_df):,}")
             m2.metric("Уникальных игроков", f"{filtered_df['user_id'].nunique():,}")
             
-            # Считаем баланс только для экономических событий
             eco_df = filtered_df[filtered_df['event_category'] == 'economy']
             m3.metric("Эмиссия/Трата золота", f"{int(eco_df['value_change'].sum()):,} 🪙")
             
-            # Считаем потраченную энергию
             energy_df = filtered_df[filtered_df['metadata'].str.contains('"currency": "energy"', na=False)]
             m4.metric("Потрачено энергии", f"{int(energy_df['value_change'].sum()):,} ⚡")
             
             st.divider()
             
-            # --- Вывод таблицы ---
-            # Оставляем только нужные колонки и задаем красивый порядок
             display_df = filtered_df[['id', 'Время', 'user_id', 'event_category', 'event_type', 'value_change', 'metadata']]
             st.dataframe(display_df, use_container_width=True, height=600)
             
-            # Кнопка выгрузки текущего среза
             csv_data = display_df.to_csv(index=False).encode('utf-8')
             st.download_button("📥 Скачать этот лог (CSV)", data=csv_data, file_name="analytics_filtered.csv", mime="text/csv")
             
@@ -710,4 +711,150 @@ with tab10:
             st.info("Таблица логов пока пуста. Подождите, пока игроки совершат действия.")
     except Exception as e:
         st.warning(f"Таблица analytics_logs еще не создана или произошла ошибка: {e}\n\nУбедитесь, что вы загрузили обновленный `database.py` и бот уже успел записать хотя бы один лог.")
+
+# --- ВКЛАДКА 11: КОНСТРУКТОР СЮЖЕТОВ ---
+with tab11:
+    st.header("🎭 Конструктор Сюжетных Квестов")
+    st.markdown("Управление кампаниями, текстовыми узлами, боевыми столкновениями и кнопками-выборами.")
+    
+    story_mode = st.radio("Режим редактирования:", ["📚 Кампании и Главы", "📜 Сюжетные Узлы", "🔘 Кнопки (Выборы)"], horizontal=True)
+    st.divider()
+
+    # --- РАЗДЕЛ: КАМПАНИИ ---
+    if story_mode == "📚 Кампании и Главы":
+        col_s1, col_s2 = st.columns([1, 1])
+        
+        with col_s1:
+            st.subheader("Текущие Кампании (stories)")
+            stories_df = fetch_table("stories")
+            st.dataframe(stories_df, use_container_width=True)
+            
+            st.subheader("Текущие Главы (story_chapters)")
+            chaps_df = fetch_table("story_chapters")
+            st.dataframe(chaps_df, use_container_width=True)
+
+        with col_s2:
+            st.subheader("➕ Добавить / Изменить Кампанию")
+            with st.form("story_editor_form"):
+                s_id = st.text_input("ID Арки (уникальный)", placeholder="act_1")
+                s_title = st.text_input("Название (Увидит игрок)", placeholder="Темный переулок")
+                s_desc = st.text_area("Описание")
+                s_start = st.text_input("ID Стартового узла", value="node_start", help="Узел, с которого начнется прохождение")
+                
+                st.markdown("**Настройка видимости:**")
+                is_public = st.toggle("Отображать всем игрокам (Публичный статус)", value=True)
+                admin_id = st.number_input("ИЛИ скрыть и оставить доступ только для Admin ID:", value=243702559)
+                
+                if st.form_submit_button("💾 Сохранить Кампанию"):
+                    if not s_id or not s_title:
+                        st.error("Заполните ID и Название!")
+                    else:
+                        r_admin = 0 if is_public else admin_id
+                        with get_conn() as conn:
+                            conn.execute("INSERT OR REPLACE INTO stories (id, title, desc, req_admin, start_node_id) VALUES (?, ?, ?, ?, ?)",
+                                         (s_id.strip(), s_title.strip(), s_desc.strip(), int(r_admin), s_start.strip()))
+                            conn.commit()
+                        st.success("Кампания сохранена!")
+                        st.rerun()
+            
+            st.subheader("➕ Добавить / Изменить Главу")
+            with st.form("chap_editor_form"):
+                c_id = st.text_input("ID Главы (уникальный)", placeholder="chap_1")
+                c_st_id = st.selectbox("Привязать к Кампании", stories_df['id'].tolist() if not stories_df.empty else [])
+                c_title = st.text_input("Название Главы")
+                
+                if st.form_submit_button("💾 Сохранить Главу"):
+                    if not c_id or not c_st_id:
+                        st.error("Заполните ID Главы и выберите кампанию!")
+                    else:
+                        with get_conn() as conn:
+                            conn.execute("INSERT OR REPLACE INTO story_chapters (id, story_id, title) VALUES (?, ?, ?)",
+                                         (c_id.strip(), c_st_id, c_title.strip()))
+                            conn.commit()
+                        st.success("Глава сохранена!")
+                        st.rerun()
+
+    # --- РАЗДЕЛ: СЮЖЕТНЫЕ УЗЛЫ ---
+    elif story_mode == "📜 Сюжетные Узлы":
+        st.subheader("Таблица Узлов (story_nodes)")
+        nodes_df = fetch_table("story_nodes")
+        st.dataframe(nodes_df, use_container_width=True, height=250)
+        
+        chaps_df = fetch_table("story_chapters")
+        chap_list = chaps_df['id'].tolist() if not chaps_df.empty else []
+        
+        st.subheader("➕ Добавить / Изменить Узел (Сцену)")
+        with st.form("node_editor_form"):
+            col_n1, col_n2, col_n3 = st.columns(3)
+            n_id = col_n1.text_input("ID Узла (Например: node_forest_1)", placeholder="Обязательно уникальный")
+            n_chap = col_n2.selectbox("Глава (chapter_id)", chap_list)
+            n_type = col_n3.selectbox("Тип узла", ["text", "combat", "reward"], help="text - обычный диалог, combat - битва, reward - выдача золота")
+            
+            n_text = st.text_area("Текст для игрока (Сам сюжет)", height=150)
+            
+            st.markdown("**Extra Data (JSON)**")
+            st.caption("Для combat: `{\"mob_id\": \"goblin\", \"win_node\": \"n_win\", \"lose_node\": \"n_lose\"}` | Для reward: `{\"gold\": 100, \"next_node_id\": \"n_next\"}`")
+            n_extra = st.text_area("JSON настройки", value='{}', height=100)
+            
+            if st.form_submit_button("💾 Сохранить Узел"):
+                if not n_id or not n_chap:
+                    st.error("ID Узла и Глава обязательны!")
+                else:
+                    try:
+                        json.loads(n_extra) # Валидация JSON
+                        with get_conn() as conn:
+                            conn.execute("INSERT OR REPLACE INTO story_nodes (id, chapter_id, node_type, text, extra_data) VALUES (?, ?, ?, ?, ?)",
+                                         (n_id.strip(), n_chap, n_type, n_text.strip(), n_extra.strip()))
+                            conn.commit()
+                        st.success(f"Узел {n_id} сохранен!")
+                        st.rerun()
+                    except json.JSONDecodeError:
+                        st.error("❌ Ошибка: Extra Data содержит невалидный JSON!")
+
+    # --- РАЗДЕЛ: ВЫБОРЫ ---
+    elif story_mode == "🔘 Кнопки (Выборы)":
+        st.subheader("Таблица Кнопок (story_choices)")
+        choices_df = fetch_table("story_choices")
+        st.dataframe(choices_df, use_container_width=True, height=250)
+        
+        nodes_df = fetch_table("story_nodes")
+        node_list = nodes_df['id'].tolist() if not nodes_df.empty else []
+        
+        st.subheader("➕ Добавить / Изменить Кнопку (Выбор)")
+        with st.form("choice_editor_form"):
+            st.info("Если вы хотите СОЗДАТЬ новую кнопку, оставьте `ID Кнопки = 0`. Если хотите ИЗМЕНИТЬ существующую, впишите её ID из таблицы.")
+            
+            col_c1, col_c2, col_c3 = st.columns(3)
+            c_id = col_c1.number_input("ID Кнопки (0 = Создать)", value=0, min_value=0)
+            c_node = col_c2.selectbox("Показать на Узле (node_id)", node_list)
+            c_next = col_c3.text_input("Ведет на Узел (next_node_id)", placeholder="node_forest_2")
+            
+            c_text = st.text_input("Текст на кнопке", placeholder="🗡 Напасть первым")
+            
+            col_j1, col_j2 = st.columns(2)
+            col_j1.markdown("**Условия (req_cond)** `req_item`, `req_flag`")
+            c_req = col_j1.text_area("Условия (JSON)", value='{}', help='Пример: {"req_item": "Зелье: Хил"}', height=100)
+            
+            col_j2.markdown("**Действия (action_data)** `take_item`, `set_flag`")
+            c_act = col_j2.text_area("Действия (JSON)", value='{}', help='Пример: {"set_flag": "helped_elf"}', height=100)
+            
+            if st.form_submit_button("💾 Сохранить Кнопку"):
+                if not c_node or not c_next or not c_text:
+                    st.error("Заполните Узел, Следующий узел и Текст кнопки!")
+                else:
+                    try:
+                        json.loads(c_req)
+                        json.loads(c_act)
+                        with get_conn() as conn:
+                            if c_id == 0:
+                                conn.execute("INSERT INTO story_choices (node_id, text, req_cond, action_data, next_node_id) VALUES (?, ?, ?, ?, ?)",
+                                             (c_node, c_text.strip(), c_req.strip(), c_act.strip(), c_next.strip()))
+                            else:
+                                conn.execute("UPDATE story_choices SET node_id=?, text=?, req_cond=?, action_data=?, next_node_id=? WHERE id=?",
+                                             (c_node, c_text.strip(), c_req.strip(), c_act.strip(), c_next.strip(), c_id))
+                            conn.commit()
+                        st.success("Кнопка успешно сохранена!")
+                        st.rerun()
+                    except json.JSONDecodeError:
+                        st.error("❌ Ошибка: Условия или Действия содержат невалидный JSON!")
 

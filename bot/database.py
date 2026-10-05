@@ -56,6 +56,9 @@ def init_db():
         except sqlite3.OperationalError: pass
         try: cursor.execute("ALTER TABLE users ADD COLUMN reengagement_stage INTEGER DEFAULT 0")
         except sqlite3.OperationalError: pass
+        
+        try: cursor.execute("ALTER TABLE users ADD COLUMN story_progress TEXT DEFAULT '{\"story_id\": \"\", \"chapter_id\": \"\", \"current_node_id\": \"\", \"flags\": {}}'")
+        except sqlite3.OperationalError: pass
             
         cursor.execute('''CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY, username TEXT, state TEXT, hp INTEGER, max_hp INTEGER,
@@ -140,6 +143,22 @@ def init_db():
             event_type TEXT, 
             value_change INTEGER, 
             metadata TEXT)''')
+            
+        # ТАБЛИЦЫ СЮЖЕТА
+        cursor.execute('''CREATE TABLE IF NOT EXISTS stories (
+            id TEXT PRIMARY KEY, title TEXT, desc TEXT, req_admin INTEGER DEFAULT 0, start_node_id TEXT DEFAULT 'node_start')''')
+        
+        try: cursor.execute("ALTER TABLE stories ADD COLUMN start_node_id TEXT DEFAULT 'node_start'")
+        except sqlite3.OperationalError: pass
+        
+        cursor.execute('''CREATE TABLE IF NOT EXISTS story_chapters (
+            id TEXT PRIMARY KEY, story_id TEXT, title TEXT)''')
+        
+        cursor.execute('''CREATE TABLE IF NOT EXISTS story_nodes (
+            id TEXT PRIMARY KEY, chapter_id TEXT, node_type TEXT, text TEXT, extra_data TEXT DEFAULT '{}')''')
+        
+        cursor.execute('''CREATE TABLE IF NOT EXISTS story_choices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, node_id TEXT, text TEXT, req_cond TEXT DEFAULT '{}', action_data TEXT DEFAULT '{}', next_node_id TEXT)''')
             
         conn.commit()
 
@@ -435,6 +454,7 @@ def seed_all():
         
         conn.commit()
         seed_bots()
+        seed_test_story()
 
 def give_item(user_id: int, item_id: str, item_type: str, amount: int = 1):
     user = get_user(user_id)
@@ -730,7 +750,7 @@ def get_user(user_id: int):
         if user:
             columns = [desc[0] for desc in cursor.description]
             u_dict = dict(zip(columns, user))
-            for json_field in ['inventory', 'home_data', 'combat_data', 'known_traits', 'dungeon_data', 'quests_data']:
+            for json_field in ['inventory', 'home_data', 'combat_data', 'known_traits', 'dungeon_data', 'quests_data', 'story_progress']:
                 if u_dict.get(json_field): 
                     try: u_dict[json_field] = json.loads(u_dict[json_field])
                     except: u_dict[json_field] = {}
@@ -802,7 +822,7 @@ def update_user(user_id: int, **kwargs):
     with get_connection() as conn:
         cursor = conn.cursor()
         for key, value in kwargs.items():
-            if key in ['inventory', 'home_data', 'combat_data', 'known_traits', 'dungeon_data', 'quests_data']: 
+            if key in ['inventory', 'home_data', 'combat_data', 'known_traits', 'dungeon_data', 'quests_data', 'story_progress']: 
                 value = json.dumps(value, ensure_ascii=False)
             cursor.execute(f"UPDATE users SET {key} = ? WHERE user_id = ?", (value, user_id))
         conn.commit()
@@ -1104,6 +1124,7 @@ def roll_card(user_id: int, theme: str = None) -> dict:
         conn.commit()
         
         return {"card_id": card[0], "name": card[1], "emoji": card[2], "rarity": rarity}
+
 _analytics_buffer = []
 
 def log_event(user_id: int, category: str, event_type: str, value: int = 0, meta: dict = None):
@@ -1167,4 +1188,73 @@ def get_item_sources(item_id: str) -> list[str]:
         sources.append(f"{loc_name} ({pct}%, {amount_str} шт.)")
         
     return list(set(sources))
+
+# --- ФУНКЦИИ СЮЖЕТА ---
+def get_available_stories(user_id: int) -> list:
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, title, desc, req_admin, start_node_id FROM stories")
+        rows = cursor.fetchall()
+        stories = []
+        for r in rows:
+            if r[3] != 0 and r[3] != user_id:
+                continue
+            stories.append({
+                "id": r[0], 
+                "title": r[1], 
+                "desc": r[2], 
+                "start_node_id": r[4] if len(r) > 4 and r[4] else 'node_start'
+            })
+        return stories
+
+def get_story_node(node_id: str) -> dict:
+    with get_connection() as conn:
+        row = conn.cursor().execute("SELECT id, chapter_id, node_type, text, extra_data FROM story_nodes WHERE id = ?", (node_id,)).fetchone()
+        if row: return {"id": row[0], "chapter_id": row[1], "node_type": row[2], "text": row[3], "extra_data": json.loads(row[4])}
+    return {}
+
+def get_story_choices(node_id: str) -> list:
+    with get_connection() as conn:
+        rows = conn.cursor().execute("SELECT id, text, req_cond, action_data, next_node_id FROM story_choices WHERE node_id = ?", (node_id,)).fetchall()
+        return [{"id": r[0], "text": r[1], "req_cond": json.loads(r[2]), "action_data": json.loads(r[3]), "next_node_id": r[4]} for r in rows]
+
+def seed_test_story():
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        
+        # Очистка старых тестовых данных во избежание дублирования кнопок при рестартах
+        cursor.execute("DELETE FROM story_choices WHERE node_id LIKE 'node_%'")
+        
+        cursor.execute("INSERT OR REPLACE INTO stories (id, title, desc, req_admin, start_node_id) VALUES (?, ?, ?, ?, ?)", ('test_story_1', 'Темный переулок', 'Тестовый квест с выборами, боем и флагами', 243702559, 'node_start'))
+        cursor.execute("INSERT OR REPLACE INTO story_chapters (id, story_id, title) VALUES (?, ?, ?)", ('chap_1', 'test_story_1', 'Глава 1: Встреча'))
+        
+        # Узел 1: Встреча
+        cursor.execute("INSERT OR REPLACE INTO story_nodes (id, chapter_id, node_type, text, extra_data) VALUES (?, ?, ?, ?, ?)", ('node_start', 'chap_1', 'text', 'Вы встречаете подозрительного эльфа. Он тянется к кинжалу.', '{}'))
+        cursor.execute("INSERT OR IGNORE INTO story_choices (node_id, text, req_cond, action_data, next_node_id) VALUES (?, ?, ?, ?, ?)", ('node_start', '🗡 Напасть первым', '{}', '{}', 'node_combat'))
+        cursor.execute("INSERT OR IGNORE INTO story_choices (node_id, text, req_cond, action_data, next_node_id) VALUES (?, ?, ?, ?, ?)", ('node_start', '💬 Выслушать', '{}', '{}', 'node_listen'))
+
+        # Узел 2: Выслушать
+        cursor.execute("INSERT OR REPLACE INTO story_nodes (id, chapter_id, node_type, text, extra_data) VALUES (?, ?, ?, ?, ?)", ('node_listen', 'chap_1', 'text', 'Эльф хрипит: "Я отравлен... У тебя есть Зелье: Хил?".', '{}'))
+        cursor.execute("INSERT OR IGNORE INTO story_choices (node_id, text, req_cond, action_data, next_node_id) VALUES (?, ?, ?, ?, ?)", ('node_listen', '🧪 Отдать зелье', '{"req_item": "Зелье: Хил"}', '{"take_item": "Зелье: Хил", "set_flag": "helped_elf"}', 'node_reward'))
+
+        # Узел Боя
+        cursor.execute("INSERT OR REPLACE INTO story_nodes (id, chapter_id, node_type, text, extra_data) VALUES (?, ?, ?, ?, ?)", ('node_combat', 'chap_1', 'combat', '', '{"mob_id": "goblin_thief", "win_node": "node_reward", "lose_node": "node_fail"}'))
+        
+        # Узел Награды
+        cursor.execute("INSERT OR REPLACE INTO story_nodes (id, chapter_id, node_type, text, extra_data) VALUES (?, ?, ?, ?, ?)", ('node_reward', 'chap_1', 'reward', 'Вы прошли испытание! Эльф (или его труп) оставляет вам награду.', '{"gold": 500, "next_node_id": "node_epilogue"}'))
+        
+        # Провал
+        cursor.execute("INSERT OR REPLACE INTO story_nodes (id, chapter_id, node_type, text, extra_data) VALUES (?, ?, ?, ?, ?)", ('node_fail', 'chap_1', 'text', 'Вас избили и выбросили в канаву.', '{"next_node_id": "town"}'))
+        cursor.execute("INSERT OR IGNORE INTO story_choices (node_id, text, req_cond, action_data, next_node_id) VALUES (?, ?, ?, ?, ?)", ('node_fail', 'Отползти в лагерь', '{}', '{}', 'town'))
+
+        # НОВЫЙ УЗЕЛ: Эпилог (Проверка флага)
+        cursor.execute("INSERT OR REPLACE INTO story_nodes (id, chapter_id, node_type, text, extra_data) VALUES (?, ?, ?, ?, ?)", ('node_epilogue', 'chap_1', 'text', 'Вы собираетесь уйти, но что-то заставляет вас обернуться.', '{}'))
+        cursor.execute("INSERT OR IGNORE INTO story_choices (node_id, text, req_cond, action_data, next_node_id) VALUES (?, ?, ?, ?, ?)", ('node_epilogue', 'Уйти в лагерь', '{}', '{}', 'town'))
+        # ПРОВЕРЯЕТ ФЛАГ "helped_elf"
+        cursor.execute("INSERT OR IGNORE INTO story_choices (node_id, text, req_cond, action_data, next_node_id) VALUES (?, ?, ?, ?, ?)", ('node_epilogue', 'Секрет спасенного эльфа', '{"req_flag": "helped_elf"}', '{}', 'node_secret'))
+
+        # НОВЫЙ УЗЕЛ: Секрет
+        cursor.execute("INSERT OR REPLACE INTO story_nodes (id, chapter_id, node_type, text, extra_data) VALUES (?, ?, ?, ?, ?)", ('node_secret', 'chap_1', 'reward', 'Эльф в благодарность за спасение шепчет вам секрет тайника!', '{"gold": 1000, "next_node_id": "town"}'))
+
+        conn.commit()
 

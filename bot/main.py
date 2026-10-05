@@ -4,8 +4,8 @@ from aiogram.types import TelegramObject, CallbackQuery, Message, InlineKeyboard
 from config import BOT_TOKEN
 from database import init_db, seed_all, get_user, update_user, check_and_notify_regen, check_inactivity_notifications, mark_user_active, flush_logs
 
-# ИМПОРТИРУЕМ ВСЕ ХЕНДЛЕРЫ, включая новый admin
-from handlers import town, dungeon, combat, alchemy, inventory, craft, minigames, market, arena, collection, trading_post, admin
+# ИМПОРТИРУЕМ ВСЕ ХЕНДЛЕРЫ, включая новый story
+from handlers import town, dungeon, combat, alchemy, inventory, craft, minigames, market, arena, collection, trading_post, admin, story
 from handlers.clans import router as clans_router
 
 # Перехватчик активности (обновляет время последнего онлайна)
@@ -83,7 +83,7 @@ async def regen_notifier_worker(bot: Bot):
                 elif days == 5:
                     text = "🔥 **Ваш костер почти погас...**\nВ подземельях накопилось много нетронутых сокровищ и лутбоксов!"
                 elif days == 17:
-                    text = "🛡️ **Клан и друзья скучают по вам.**\nВозвращайтесь, пока ржавчина окончательно не съела ваш меч!"
+                    text = "🛡️️ **Клан и друзья скучают по вам.**\nВозвращайтесь, пока ржавчина окончательно не съела ваш меч!"
                 elif days == 31:
                     text = "📜 **Спустя месяц вашего отсутствия...**\nБарды сложили о вас легенду. Но, может, это еще не конец?"
                 else:
@@ -120,6 +120,7 @@ async def main():
     
     # РЕГИСТРАЦИЯ РОУТЕРОВ
     dp.include_router(admin.router) # <--- Роутер чит-меню
+    dp.include_router(story.router) # <--- СЮЖЕТНЫЙ РОУТЕР
     dp.include_router(town.router)
     dp.include_router(minigames.router)
     dp.include_router(dungeon.router)
@@ -141,3 +142,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
