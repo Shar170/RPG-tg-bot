@@ -30,7 +30,7 @@ async def open_inventory(callback: CallbackQuery):
         f"Выберите раздел сумки:"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🗡️ Оружие", callback_data="inv_list_weapon"), 
+        [InlineKeyboardButton(text="🗡️️ Оружие", callback_data="inv_list_weapon"), 
          InlineKeyboardButton(text="🛡️ Броня", callback_data="inv_list_armor")],
         [InlineKeyboardButton(text="💍 Артефакты", callback_data="inv_list_artifact")],
         [InlineKeyboardButton(text="🧪 Зелья и Бомбы", callback_data="inv_list_potions"), 
@@ -39,9 +39,8 @@ async def open_inventory(callback: CallbackQuery):
     ])
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
-@router.callback_query(F.data.startswith("inv_list_"))
-async def inv_list_category(callback: CallbackQuery):
-    cat = callback.data.replace("inv_list_", "")
+async def render_category(callback: CallbackQuery, cat: str):
+    """Вспомогательная функция для отрисовки категории без подмены коллбэка"""
     user = get_user(callback.from_user.id)
     inv = user.get('inventory', {})
     eq = inv.get('equipment', {})
@@ -61,7 +60,6 @@ async def inv_list_category(callback: CallbackQuery):
             stats_str = ""
             stats = item.get('stats', {})
             
-            # Отображаем требуемый уровень, если он больше 1
             req_lvl = int(stats.get('req_lvl', 1))
             if req_lvl > 1: stats_str += f"🏅Ур.{req_lvl} "
                 
@@ -80,13 +78,25 @@ async def inv_list_category(callback: CallbackQuery):
     elif cat == "potions":
         pots = inv.get("potions", [])
         counts = {p: pots.count(p) for p in set(pots)}
-        text = "🧪 **Ваши зелья и расходники:**\n\n" + "\n".join([f"• {p} (x{c})" for p, c in counts.items()]) if pots else "🧪 У вас нет зелий."
+        lines = []
+        for p_id, c in counts.items():
+            item_data = get_item(p_id)
+            name = item_data['name'] if item_data else p_id
+            lines.append(f"• {name} (x{c})")
+            
+        text = "🧪 **Ваши зелья и расходники:**\n\n" + "\n".join(lines) if pots else "🧪 У вас нет зелий."
+        
     elif cat == "materials":
         mats = inv.get("materials", {})
         text = "📦 **Ваши ресурсы:**\n\n" + "\n".join([f"• {get_item_name(m)} (x{c})" for m, c in mats.items() if c > 0]) if mats else "📦 У вас нет ресурсов."
         
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="inv_open")])
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
+
+@router.callback_query(F.data.startswith("inv_list_"))
+async def inv_list_category(callback: CallbackQuery):
+    cat = callback.data.replace("inv_list_", "")
+    await render_category(callback, cat)
 
 @router.callback_query(F.data.startswith("inv_eq_"))
 async def inv_equip_item(callback: CallbackQuery):
@@ -98,7 +108,6 @@ async def inv_equip_item(callback: CallbackQuery):
     inv = user.get('inventory', {})
     eq = inv.setdefault('equipment', {})
     
-    # Проверка уровня при попытке надеть предмет
     if eq.get(cat) != item_id:
         item = get_item(item_id)
         if item:
@@ -116,6 +125,6 @@ async def inv_equip_item(callback: CallbackQuery):
         await callback.answer("Предмет надет!", show_alert=False)
         
     update_user(user['user_id'], inventory=inv)
-    callback.data = f"inv_list_{cat}"
-    await inv_list_category(callback)
+    # Вызываем отрисовку напрямую
+    await render_category(callback, cat)
 

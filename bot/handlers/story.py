@@ -2,7 +2,7 @@ import json
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from database import (
-    get_connection, get_user, update_user, get_story_node, 
+    get_connection, get_user, update_user, get_story_node, get_item,
     get_story_choices, get_available_stories, get_unlocked_titles, get_clan, get_item_name
 )
 from handlers.town import get_town_kb
@@ -10,7 +10,6 @@ from handlers.combat import render_combat
 
 router = Router()
 
-# --- ЕДИНЫЙ МАРШРУТИЗАТОР ПЕРЕХОДОВ ---
 async def navigate_to_node(callback: CallbackQuery, user: dict, next_node: str):
     if next_node == "town":
         update_user(user['user_id'], state='STATE_TOWN')
@@ -38,8 +37,6 @@ async def navigate_to_node(callback: CallbackQuery, user: dict, next_node: str):
 
     await render_story_node(callback, user, next_node)
 
-
-# --- МЕНЮ ВЫБОРА СЮЖЕТОВ ---
 @router.callback_query(F.data == "town_story_enter")
 async def story_menu(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
@@ -71,8 +68,6 @@ async def story_menu(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
-
-# --- ВХОД В КОНКРЕТНУЮ ИСТОРИЮ ---
 @router.callback_query(F.data.startswith("story_select:"))
 async def enter_story_arc(callback: CallbackQuery):
     story_id = callback.data.split(":")[1]
@@ -95,8 +90,6 @@ async def enter_story_arc(callback: CallbackQuery):
         
     await render_story_node(callback, user, node_id)
 
-
-# --- ОТРИСОВКА УЗЛА И ДИНАМИЧЕСКИЕ ПРОВЕРКИ ---
 async def render_story_node(callback: CallbackQuery, user: dict, node_id: str):
     node = get_story_node(node_id)
     if not node:
@@ -120,7 +113,6 @@ async def render_story_node(callback: CallbackQuery, user: dict, node_id: str):
         
     update_user(user['user_id'], story_progress=progress, state='STATE_STORY')
     
-    # === 1. ПОДГОТОВКА ДЛЯ ФОРМАТИРОВАНИЯ ===
     home_data = user.get('home_data', {})
     active_title = home_data.get('active_title', 'Новичок')
     active_medal = home_data.get('active_medal', 'Нет медалей')
@@ -149,7 +141,6 @@ async def render_story_node(callback: CallbackQuery, user: dict, node_id: str):
     for k, v in replacements.items():
         raw_text = raw_text.replace(k, str(v))
     
-    # === 2. ОБРАБОТКА ТИПОВ УЗЛОВ ===
     if node['node_type'] == 'combat':
         mob_id = node['extra_data'].get('mob_id', 'temple_guard')
         mob_modifier = float(node['extra_data'].get('mob_modifier', 1.0))
@@ -157,7 +148,6 @@ async def render_story_node(callback: CallbackQuery, user: dict, node_id: str):
         from database import get_mob_by_name 
         mob = get_mob_by_name(mob_id) 
         
-        # Динамический скейл характеристик по модификатору
         max_hp = max(1, int(mob['hp_max'] * mob_modifier))
         dmg_min = max(1, int(mob['dmg_min'] * mob_modifier))
         dmg_max = max(1, int(mob['dmg_max'] * mob_modifier))
@@ -179,7 +169,7 @@ async def render_story_node(callback: CallbackQuery, user: dict, node_id: str):
             "distance": "close"
         }
         update_user(user['user_id'], state='STATE_COMBAT', combat_data=combat_data)
-        return await render_combat(callback, user, combat_data, f"⚔️ {mob['name']} преграждает путь по сюжету!")
+        return await render_combat(callback, user, combat_data, f"⚔️️ {mob['name']} преграждает путь по сюжету!")
 
     elif node['node_type'] == 'reward':
         claimed = progress.setdefault('claimed_rewards', [])
@@ -210,6 +200,8 @@ async def render_story_node(callback: CallbackQuery, user: dict, node_id: str):
                 
                 if i_type in ['weapon', 'armor']:
                     for _ in range(i_qty): inv.setdefault('backpack', []).append(i_id)
+                elif i_type == 'artifact':
+                    for _ in range(i_qty): inv.setdefault('artifacts', []).append(i_id)
                 elif i_type == 'potion':
                     for _ in range(i_qty): inv.setdefault('potions', []).append(i_id)
                 elif i_type == 'material':
@@ -240,23 +232,31 @@ async def render_story_node(callback: CallbackQuery, user: dict, node_id: str):
         ])
         return await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
-    # === 3. КНОПКИ И ПРОВЕРКИ УСЛОВИЙ ===
     choices = get_story_choices(node_id)
     buttons = []
     flags = progress.get('flags', {})
     inv = user.get('inventory', {})
     
-    all_items = inv.get('backpack', []) + inv.get('potions', []) + list(inv.get('materials', {}).keys())
+    all_items = inv.get('backpack', []) + inv.get('potions', []) + inv.get('artifacts', []) + list(inv.get('materials', {}).keys())
+    
+    mapped_items = []
+    for i_id in all_items:
+        mapped_items.append(i_id)
+        item_data = get_item(i_id)
+        if item_data:
+            mapped_items.append(item_data['name'])
 
     for c in choices:
         can_click = True
         fail_reason = ""
         reqs = c['req_cond']
         
-        if 'req_item' in reqs and reqs['req_item'] not in all_items:
+        if 'req_item' in reqs and reqs['req_item'] not in mapped_items:
             can_click, fail_reason = False, "❌ Нет предмета"
         elif 'req_flag' in reqs and reqs['req_flag'] not in flags:
             can_click, fail_reason = False, "❌ Не выполнено"
+        elif 'req_flags_all' in reqs and any(f not in flags for f in reqs['req_flags_all']):
+            can_click, fail_reason = False, "❌ Недостаточно улик"
         elif 'req_level' in reqs and user.get('level', 1) < reqs['req_level']:
             can_click, fail_reason = False, f"❌ Ур. {reqs['req_level']}+"
         elif 'req_hp_full' in reqs and reqs['req_hp_full']:
@@ -317,15 +317,36 @@ async def handle_story_choice(callback: CallbackQuery):
     
     if 'take_item' in action_data:
         item = action_data['take_item']
+        
         if item in inv.get('potions', []): inv['potions'].remove(item)
         elif item in inv.get('backpack', []): inv['backpack'].remove(item)
+        elif item in inv.get('artifacts', []): inv['artifacts'].remove(item)
         elif item in inv.get('materials', {}): 
             inv['materials'][item] -= 1
             if inv['materials'][item] <= 0: del inv['materials'][item]
+        else:
+            found = False
+            for inv_cat in ['potions', 'backpack', 'artifacts']:
+                if found: break
+                for i_id in inv.get(inv_cat, []):
+                    data = get_item(i_id)
+                    if data and data['name'] == item:
+                        inv[inv_cat].remove(i_id)
+                        found = True
+                        break
         need_update = True
         
     if 'set_flag' in action_data:
         flags[action_data['set_flag']] = True
+        need_update = True
+        
+    if 'take_hp_pct' in action_data:
+        dmg = int(user.get('max_hp', 100) * action_data['take_hp_pct'])
+        user['hp'] = max(1, user['hp'] - dmg)
+        need_update = True
+        
+    if 'take_hp' in action_data:
+        user['hp'] = max(1, user['hp'] - action_data['take_hp'])
         need_update = True
         
     if 'clear_flag' in action_data:
@@ -346,6 +367,8 @@ async def handle_story_choice(callback: CallbackQuery):
             
             if i_type in ['weapon', 'armor']:
                 for _ in range(i_qty): inv.setdefault('backpack', []).append(i_id)
+            elif i_type == 'artifact':
+                for _ in range(i_qty): inv.setdefault('artifacts', []).append(i_id)
             elif i_type == 'potion':
                 for _ in range(i_qty): inv.setdefault('potions', []).append(i_id)
             elif i_type == 'material':
@@ -354,7 +377,8 @@ async def handle_story_choice(callback: CallbackQuery):
         
     if need_update:
         progress['flags'] = flags
-        update_user(user['user_id'], gold=user['gold'], inventory=inv, story_progress=progress)
+        update_user(user['user_id'], hp=user['hp'], gold=user['gold'], inventory=inv, story_progress=progress)
         
     await navigate_to_node(callback, user, next_node)
+
 
