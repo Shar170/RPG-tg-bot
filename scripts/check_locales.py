@@ -80,6 +80,8 @@ def main() -> int:
     from data.traits import TRAITS
     from data.items import ITEMS
     from data.item_names import ITEM_NAMES_EN
+    from data.ingredients import INGREDIENTS
+    from data.ingredient_names import INGREDIENT_NAMES_EN
     from utils.titles import ALL_TITLES, MEDAL_TIERS
 
     required = [f"trait.{tid}" for tid in TRAITS]
@@ -95,6 +97,12 @@ def main() -> int:
         errors.append(f"missing English name for item '{item_id}'")
     for item_id in sorted(set(ITEM_NAMES_EN) - item_ids):
         errors.append(f"English name for unknown item '{item_id}'")
+
+    ingredient_ids = {ingredient_id for ingredient_id, *_rest in INGREDIENTS}
+    for ingredient_id in sorted(ingredient_ids - set(INGREDIENT_NAMES_EN)):
+        errors.append(f"missing English name for ingredient '{ingredient_id}'")
+    for ingredient_id in sorted(set(INGREDIENT_NAMES_EN) - ingredient_ids):
+        errors.append(f"English name for unknown ingredient '{ingredient_id}'")
 
     if errors:
         print("Locale check failed:")

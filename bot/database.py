@@ -15,6 +15,7 @@ from data.locations import SOLO_DUNGEONS, WAR_REGIONS, DAILY_DUNGEONS
 from data.mobs import BESTIARY
 from data.recipes import RECIPES
 from data.item_names import item_display_name
+from data.ingredient_names import ingredient_display_name
 from utils.titles import (
     TITLE_NOVICE, TITLE_SLIME_SLAYER, TITLE_BUTCHER, TITLE_BOSS_HUNTER,
     TITLE_GLADIATOR, TITLE_ARENA_CHAMPION, TITLE_WAR_HERO, TITLE_THINKER,
@@ -1038,8 +1039,15 @@ def get_mob_by_name(name: str):
         if row: return {"mob_id": row[0], "name": row[1], "hp_min": row[2], "hp_max": row[3], "dmg_min": row[4], "dmg_max": row[5], "row_pref": row[6], "skills": json.loads(row[7] if row[7] else "{}"), "gold_min": row[8], "gold_max": row[9], "xp_reward": row[10]}
     return {"mob_id": "temple_guard", "name": "Храмовый Страж", "hp_min": 55, "hp_max": 75, "dmg_min": 12, "dmg_max": 18, "row_pref": "front", "skills": {}, "gold_min": 6, "gold_max": 14, "xp_reward": 12}
 
-def get_all_ingredients():
-    with get_connection() as conn: return {row[0]: {"name": row[1], "traits": json.loads(row[2])} for row in conn.cursor().execute("SELECT * FROM alchemy_ingredients").fetchall()}
+def get_all_ingredients(lang: str | None = None):
+    with get_connection() as conn:
+        return {
+            row[0]: {
+                "name": ingredient_display_name(row[0], row[1], lang=lang),
+                "traits": json.loads(row[2]),
+            }
+            for row in conn.cursor().execute("SELECT * FROM alchemy_ingredients").fetchall()
+        }
 
 def get_item(item_id: str, lang: str | None = None):
     with get_connection() as conn:
@@ -1074,7 +1082,7 @@ def get_item_name(item_id: str, lang: str | None = None) -> str:
         res = cursor.execute("SELECT name FROM items WHERE item_id = ?", (item_id,)).fetchone()
         if res: return item_display_name(item_id, res[0], lang=lang)
         res = cursor.execute("SELECT name FROM alchemy_ingredients WHERE item_id = ?", (item_id,)).fetchone()
-        if res: return res[0]
+        if res: return ingredient_display_name(item_id, res[0], lang=lang)
         res = cursor.execute("SELECT name, emoji FROM cards WHERE card_id = ?", (item_id,)).fetchone()
         if res: return f"{res[1]} {res[0]}"
         res = cursor.execute("SELECT name FROM loot_boxes WHERE box_id = ?", (item_id,)).fetchone()
