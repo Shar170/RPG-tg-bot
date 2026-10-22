@@ -23,6 +23,28 @@ class ClanStates(StatesGroup):
     waiting_for_banner = State()
     waiting_for_chat_msg = State()
 
+# --- ПРАВА ДОСТУПА ---
+ROLE_RANK = {'thrall': 1, 'lindeman': 2, 'hedwing': 3}
+
+def get_actor_clan(user: dict):
+    """Возвращает клан игрока или None. «Висящий» clan_id без клана лечится."""
+    clan_id = user.get('clan_id', 0)
+    if not clan_id:
+        return None
+    clan = get_clan(clan_id)
+    if not clan:
+        update_user(user['user_id'], clan_id=0, clan_role='thrall')
+        return None
+    return clan
+
+def role_at_least(user: dict, min_role: str) -> bool:
+    return ROLE_RANK.get(user.get('clan_role'), 0) >= ROLE_RANK[min_role]
+
+def can_manage(actor: dict, target: dict) -> bool:
+    """Офицер управляет только рядовыми, глава — офицерами и рядовыми."""
+    return ROLE_RANK.get(actor.get('clan_role'), 0) > ROLE_RANK.get(target.get('clan_role'), 0)
+
+
 def format_clan_requirements_text(reqs: dict, short: bool = False) -> str:
     parts = []
     if reqs["min_level"] > 0:
@@ -117,6 +139,8 @@ async def clan_create_start(callback: CallbackQuery, state: FSMContext):
 
 @router.message(ClanStates.waiting_for_name)
 async def clan_create_name_input(message: Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("⚠️ Отправьте название клана обычным текстом.")
     name = message.text.strip()
     user = get_user(message.from_user.id)
     reqs = get_clan_creation_requirements()
@@ -154,7 +178,8 @@ async def clan_create_name_input(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="🏰 В мой клан", callback_data="clan_my_info")],
         [InlineKeyboardButton(text="🔙 В лагерь", callback_data="town_back")]
     ])
-    await message.answer(f"🎉 **Великое событие!**\nКлан **{name}** успешно основан!\nВы назначены его верховным лидером.", reply_markup=kb, parse_mode="Markdown")
+    msg = await message.answer(f"🎉 **Великое событие!**\nКлан **{name}** успешно основан!\nВы назначены его верховным лидером.", reply_markup=kb, parse_mode="Markdown")
+    update_user(user['user_id'], last_msg_id=msg.message_id)
 
 # --- МОЙ КЛАН (ПРОФИЛЬ) ---
 @router.callback_query(F.data == "clan_my_info")
@@ -239,10 +264,13 @@ async def clan_homes_list(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("clan_vhome_"))
 async def clan_view_home(callback: CallbackQuery):
     target_id = int(callback.data.replace("clan_vhome_", ""))
+    viewer = get_user(callback.from_user.id)
     target_user = get_user(target_id)
     
     if not target_user: 
         return await callback.answer("Игрок не найден!", show_alert=True)
+    if not viewer or target_user.get('clan_id', 0) == 0 or target_user.get('clan_id') != viewer.get('clan_id'):
+        return await callback.answer("Этот игрок не состоит в вашем клане!", show_alert=True)
         
     home_data = target_user.get('home_data', {})
     stats = home_data.get('stats', {})
@@ -289,6 +317,8 @@ async def clan_set_banner_do(message: Message, state: FSMContext):
     if not clan or clan['leader_id'] != user['user_id']:
         return await message.answer("Только лидер может изменять стяг!")
         
+    if not message.text:
+        return await message.answer("⚠️ Отправьте стяг обычным текстом (эмодзи).")
     banner = message.text.strip()
     if len(banner) > 4: 
         return await message.answer("⚠️ Слишком длинный стяг! Попробуйте использовать 1-2 эмодзи.")
@@ -297,7 +327,8 @@ async def clan_set_banner_do(message: Message, state: FSMContext):
     await state.clear()
     
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 В клан", callback_data="clan_my_info")]])
-    await message.answer(f"✅ Стяг клана успешно изменен на {banner}!", reply_markup=kb)
+    msg = await message.answer(f"✅ Стяг клана успешно изменен на {banner}!", reply_markup=kb)
+    update_user(user['user_id'], last_msg_id=msg.message_id)
 
 # --- ЧАТ КЛАНА ---
 @router.callback_query(F.data == "clan_chat_view")
@@ -331,6 +362,8 @@ async def clan_chat_write(callback: CallbackQuery, state: FSMContext):
 
 @router.message(ClanStates.waiting_for_chat_msg)
 async def clan_chat_receive(message: Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("⚠️ Сообщение в чат клана должно быть текстом.")
     user = get_user(message.from_user.id)
     clan = get_clan(user.get('clan_id', 0))
     if not clan: return
@@ -351,7 +384,8 @@ async def clan_chat_receive(message: Message, state: FSMContext):
     await state.clear()
     
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Открыть чат", callback_data="clan_chat_view")]])
-    await message.answer("✅ Сообщение отправлено в клан!", reply_markup=kb)
+    msg = await message.answer("✅ Сообщение отправлено в клан!", reply_markup=kb)
+    update_user(user['user_id'], last_msg_id=msg.message_id)
 
 # --- КЛАНОВЫЙ ТОРГОВЕЦ ---
 @router.callback_query(F.data == "clan_merchant_view")
@@ -423,7 +457,7 @@ async def clan_merchant_buy(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("c_merch_sell_"))
 async def clan_merchant_sell(callback: CallbackQuery):
     i_id = callback.data.replace("c_merch_sell_", "")
-    user = get_user(callback.fromuser.id)
+    user = get_user(callback.from_user.id)
     
     inv = user['inventory']
     has_item = False
@@ -535,10 +569,13 @@ async def clan_upgrade_do(callback: CallbackQuery):
 @router.callback_query(F.data == "clan_manage_list")
 async def clan_manage_list(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
+    clan = get_actor_clan(user)
+    if not clan:
+        return await callback.answer("Вы не состоите в клане!", show_alert=True)
     if user.get('clan_role') not in ['hedwing', 'lindeman']:
         return await callback.answer("У вас нет прав!", show_alert=True)
         
-    members = get_clan_members(user['clan_id'])
+    members = get_clan_members(clan['clan_id'])
     buttons = []
     for m in members:
         if m['user_id'] == user['user_id']: continue 
@@ -552,16 +589,24 @@ async def clan_manage_list(callback: CallbackQuery):
 async def clan_manage_user(callback: CallbackQuery):
     target_id = int(callback.data.replace("clan_manage_u_", ""))
     user = get_user(callback.from_user.id)
+    clan = get_actor_clan(user)
+    if not clan:
+        return await callback.answer("Вы не состоите в клане!", show_alert=True)
+    if user.get('clan_role') not in ['hedwing', 'lindeman']:
+        return await callback.answer("У вас нет прав!", show_alert=True)
+        
     target = get_user(target_id)
     
-    if not target or target.get('clan_id') != user.get('clan_id'):
+    if not target or target.get('clan_id') != clan['clan_id']:
         return await callback.answer("Игрок не найден в клане!", show_alert=True)
+    if target['user_id'] == user['user_id']:
+        return await callback.answer("Нельзя управлять самим собой!", show_alert=True)
         
     my_role = user.get('clan_role')
     tar_role = target.get('clan_role')
     
-    if my_role == 'lindeman' and tar_role in ['hedwing', 'lindeman']:
-        return await callback.answer("Офицер может управлять только рядовыми!", show_alert=True)
+    if not can_manage(user, target):
+        return await callback.answer("Недостаточно прав для управления этим участником!", show_alert=True)
         
     role_titles = {'hedwing': 'Глава', 'lindeman': 'Офицер', 'thrall': 'Рядовой'}
     text = f"👤 **Участник: {target['username']}**\nТекущая должность: **{role_titles.get(tar_role, 'Рядовой')}**\n\nВыберите действие:"
@@ -583,9 +628,20 @@ async def clan_setrole(callback: CallbackQuery):
     parts = callback.data.split("_")
     target_id, new_role = int(parts[2]), parts[3]
     user = get_user(callback.from_user.id)
+    clan = get_actor_clan(user)
     
-    if user.get('clan_role') != 'hedwing':
+    if not clan or user.get('clan_role') != 'hedwing':
         return await callback.answer("Только лидер может менять должности!", show_alert=True)
+    if new_role not in ('thrall', 'lindeman'):
+        return await callback.answer("Недопустимая должность!", show_alert=True)
+    if target_id == user['user_id']:
+        return await callback.answer("Нельзя менять собственную должность!", show_alert=True)
+        
+    target = get_user(target_id)
+    if not target or target.get('clan_id') != clan['clan_id']:
+        return await callback.answer("Игрок не найден в клане!", show_alert=True)
+    if target.get('clan_role') == 'hedwing':
+        return await callback.answer("Нельзя менять должность главы!", show_alert=True)
         
     update_user(target_id, clan_role=new_role)
     await callback.answer("Должность изменена!")
@@ -595,12 +651,17 @@ async def clan_setrole(callback: CallbackQuery):
 async def clan_kick(callback: CallbackQuery):
     target_id = int(callback.data.replace("clan_kick_", ""))
     user = get_user(callback.from_user.id)
+    clan = get_actor_clan(user)
+    
+    if not clan:
+        return await callback.answer("Вы не состоите в клане!", show_alert=True)
+        
     target = get_user(target_id)
-    
-    my_role = user.get('clan_role')
-    tar_role = target.get('clan_role') if target else 'thrall'
-    
-    if my_role == 'lindeman' and tar_role in ['hedwing', 'lindeman']:
+    if not target or target.get('clan_id') != clan['clan_id']:
+        return await callback.answer("Игрок не найден в клане!", show_alert=True)
+    if target['user_id'] == user['user_id']:
+        return await callback.answer("Нельзя изгнать самого себя!", show_alert=True)
+    if not can_manage(user, target):
         return await callback.answer("Недостаточно прав!", show_alert=True)
         
     update_user(target_id, clan_id=0, clan_role='thrall')
@@ -612,11 +673,9 @@ async def clan_kick(callback: CallbackQuery):
 async def show_clan_vault(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     user = get_user(callback.from_user.id)
-    clan_id = user.get('clan_id', 0)
-    if clan_id == 0:
+    clan = get_actor_clan(user)
+    if not clan:
         return await callback.answer("Вы не состоите в клане!", show_alert=True)
-        
-    clan = get_clan(clan_id)
     vault_raw = clan.get('clan_vault', '{}')
     if isinstance(vault_raw, str):
         try: vault = json.loads(vault_raw)
@@ -664,7 +723,13 @@ async def ask_donate_gold(callback: CallbackQuery, state: FSMContext):
 
 @router.message(ClanStates.waiting_for_gold)
 async def process_donate_gold(message: Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("⚠️ Отправьте сумму обычным текстом.")
     user = get_user(message.from_user.id)
+    clan = get_actor_clan(user)
+    if not clan:
+        await state.clear()
+        return await message.answer("⚠️ Вы не состоите в клане.")
     try: amount = int(message.text.strip())
     except ValueError: return await message.answer("⚠️ Пожалуйста, введите только число!")
         
@@ -674,7 +739,6 @@ async def process_donate_gold(message: Message, state: FSMContext):
     user['gold'] -= amount
     update_user(user['user_id'], gold=user['gold'])
     
-    clan = get_clan(user['clan_id'])
     update_clan(clan['clan_id'], treasury=clan.get('treasury', 0) + amount)
     
     # ЛОГ: Вклад в казну золотом
@@ -682,7 +746,8 @@ async def process_donate_gold(message: Message, state: FSMContext):
     
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 В казну", callback_data="clan_vault_view")]])
-    await message.answer(f"✅ Вы успешно пожертвовали **{amount} 🪙** в казну клана!", reply_markup=kb, parse_mode="Markdown")
+    msg = await message.answer(f"✅ Вы успешно пожертвовали **{amount} 🪙** в казну клана!", reply_markup=kb, parse_mode="Markdown")
+    update_user(user['user_id'], last_msg_id=msg.message_id)
 
 @router.callback_query(F.data == "clan_donate_gems_ask")
 async def ask_donate_gems(callback: CallbackQuery, state: FSMContext):
@@ -692,7 +757,13 @@ async def ask_donate_gems(callback: CallbackQuery, state: FSMContext):
 
 @router.message(ClanStates.waiting_for_gems)
 async def process_donate_gems(message: Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("⚠️ Отправьте количество обычным текстом.")
     user = get_user(message.from_user.id)
+    clan = get_actor_clan(user)
+    if not clan:
+        await state.clear()
+        return await message.answer("⚠️ Вы не состоите в клане.")
     try: amount = int(message.text.strip())
     except ValueError: return await message.answer("⚠️ Пожалуйста, введите только число!")
         
@@ -702,7 +773,6 @@ async def process_donate_gems(message: Message, state: FSMContext):
     user['gems'] -= amount
     update_user(user['user_id'], gems=user['gems'])
     
-    clan = get_clan(user['clan_id'])
     vault_raw = clan.get('clan_vault', '{}')
     vault = json.loads(vault_raw) if isinstance(vault_raw, str) else vault_raw
     vault['gems'] = vault.get('gems', 0) + amount
@@ -713,11 +783,14 @@ async def process_donate_gems(message: Message, state: FSMContext):
     
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 В казну", callback_data="clan_vault_view")]])
-    await message.answer(f"✅ Вы успешно пожертвовали **{amount} 💎** в казну клана!", reply_markup=kb, parse_mode="Markdown")
+    msg = await message.answer(f"✅ Вы успешно пожертвовали **{amount} 💎** в казну клана!", reply_markup=kb, parse_mode="Markdown")
+    update_user(user['user_id'], last_msg_id=msg.message_id)
 
 @router.callback_query(F.data == "clan_donate_item_list")
 async def clan_donate_item_list(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
+    if not get_actor_clan(user):
+        return await callback.answer("Вы не состоите в клане!", show_alert=True)
     materials = user['inventory'].get('materials', {})
     if not materials:
         return await callback.answer("У вас нет ресурсов для вклада!", show_alert=True)
@@ -734,6 +807,9 @@ async def clan_donate_item_list(callback: CallbackQuery):
 async def clan_donate_item_do(callback: CallbackQuery):
     m_id = callback.data.replace("clan_don_item_", "")
     user = get_user(callback.from_user.id)
+    clan = get_actor_clan(user)
+    if not clan:
+        return await callback.answer("Вы не состоите в клане!", show_alert=True)
     inv = user['inventory']
     materials = inv.get('materials', {})
     
@@ -744,7 +820,6 @@ async def clan_donate_item_do(callback: CallbackQuery):
     if materials[m_id] == 0: del materials[m_id]
     update_user(user['user_id'], inventory=inv)
     
-    clan = get_clan(user['clan_id'])
     vault_raw = clan.get('clan_vault', '{}')
     vault = json.loads(vault_raw) if isinstance(vault_raw, str) else vault_raw
     items_vault = vault.setdefault('items', {})
@@ -766,6 +841,8 @@ async def ask_withdraw_gold(callback: CallbackQuery, state: FSMContext):
 
 @router.message(ClanStates.waiting_for_withdraw_gold)
 async def process_withdraw_gold(message: Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("⚠️ Отправьте сумму обычным текстом.")
     user = get_user(message.from_user.id)
     if user.get('clan_role') not in ['hedwing', 'lindeman']:
         return await message.answer("У вас нет прав!")
@@ -774,7 +851,10 @@ async def process_withdraw_gold(message: Message, state: FSMContext):
     except ValueError: return await message.answer("⚠️ Введите число!")
     if amount <= 0: return await message.answer("⚠️ Сумма должна быть больше 0!")
 
-    clan = get_clan(user['clan_id'])
+    clan = get_actor_clan(user)
+    if not clan:
+        await state.clear()
+        return await message.answer("⚠️ Вы не состоите в клане.")
     if clan.get('treasury', 0) < amount:
         return await message.answer(f"⚠️ В казне нет столько золота! (В казне: {clan.get('treasury', 0)} 🪙)")
 
@@ -787,7 +867,8 @@ async def process_withdraw_gold(message: Message, state: FSMContext):
 
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 В казну", callback_data="clan_vault_view")]])
-    await message.answer(f"✅ Вы забрали **{amount} 🪙** из казны!", reply_markup=kb, parse_mode="Markdown")
+    msg = await message.answer(f"✅ Вы забрали **{amount} 🪙** из казны!", reply_markup=kb, parse_mode="Markdown")
+    update_user(user['user_id'], last_msg_id=msg.message_id)
 
 @router.callback_query(F.data == "clan_withdraw_gems_ask")
 async def ask_withdraw_gems(callback: CallbackQuery, state: FSMContext):
@@ -801,6 +882,8 @@ async def ask_withdraw_gems(callback: CallbackQuery, state: FSMContext):
 
 @router.message(ClanStates.waiting_for_withdraw_gems)
 async def process_withdraw_gems(message: Message, state: FSMContext):
+    if not message.text:
+        return await message.answer("⚠️ Отправьте количество обычным текстом.")
     user = get_user(message.from_user.id)
     if user.get('clan_role') not in ['hedwing', 'lindeman']:
         return await message.answer("У вас нет прав!")
@@ -809,7 +892,10 @@ async def process_withdraw_gems(message: Message, state: FSMContext):
     except ValueError: return await message.answer("⚠️ Введите число!")
     if amount <= 0: return await message.answer("⚠️ Сумма должна быть больше 0!")
 
-    clan = get_clan(user['clan_id'])
+    clan = get_actor_clan(user)
+    if not clan:
+        await state.clear()
+        return await message.answer("⚠️ Вы не состоите в клане.")
     vault_raw = clan.get('clan_vault', '{}')
     vault = json.loads(vault_raw) if isinstance(vault_raw, str) else vault_raw
     
@@ -827,7 +913,8 @@ async def process_withdraw_gems(message: Message, state: FSMContext):
 
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 В казну", callback_data="clan_vault_view")]])
-    await message.answer(f"✅ Вы забрали **{amount} 💎** из казны!", reply_markup=kb, parse_mode="Markdown")
+    msg = await message.answer(f"✅ Вы забрали **{amount} 💎** из казны!", reply_markup=kb, parse_mode="Markdown")
+    update_user(user['user_id'], last_msg_id=msg.message_id)
 
 @router.callback_query(F.data == "clan_withdraw_item_list")
 async def clan_withdraw_item_list(callback: CallbackQuery):
@@ -835,7 +922,9 @@ async def clan_withdraw_item_list(callback: CallbackQuery):
     if user.get('clan_role') not in ['hedwing', 'lindeman']:
         return await callback.answer("У вас нет прав!", show_alert=True)
         
-    clan = get_clan(user['clan_id'])
+    clan = get_actor_clan(user)
+    if not clan:
+        return await callback.answer("Вы не состоите в клане!", show_alert=True)
     vault = json.loads(clan.get('clan_vault', '{}')) if isinstance(clan.get('clan_vault'), str) else clan.get('clan_vault', {})
     items = vault.get('items', {})
 
@@ -857,7 +946,9 @@ async def clan_take_item_do(callback: CallbackQuery):
     if user.get('clan_role') not in ['hedwing', 'lindeman']:
         return await callback.answer("У вас нет прав!", show_alert=True)
 
-    clan = get_clan(user['clan_id'])
+    clan = get_actor_clan(user)
+    if not clan:
+        return await callback.answer("Вы не состоите в клане!", show_alert=True)
     vault_raw = clan.get('clan_vault', '{}')
     vault = json.loads(vault_raw) if isinstance(vault_raw, str) else vault_raw
     items_vault = vault.setdefault('items', {})
@@ -901,8 +992,9 @@ async def show_clans_list(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
 
 @router.callback_query(F.data.startswith("clan_view_"))
-async def view_clan_card(callback: CallbackQuery):
-    clan_id = int(callback.data.replace("clan_view_", ""))
+async def view_clan_card(callback: CallbackQuery, clan_id: int = None):
+    if clan_id is None:
+        clan_id = int(callback.data.replace("clan_view_", ""))
     user = get_user(callback.from_user.id)
     clans = get_all_clans_ranked()
     
@@ -946,6 +1038,10 @@ async def apply_to_clan(callback: CallbackQuery):
     if user.get('clan_id', 0) != 0: return await callback.answer("Вы уже состоите в клане!", show_alert=True)
     clan = get_clan(clan_id)
     if not clan: return await callback.answer("Клан не найден!", show_alert=True)
+    
+    max_m = 5 + clan['level'] * 5
+    if len(get_clan_members(clan_id)) >= max_m:
+        return await callback.answer("В клане больше нет свободных мест!", show_alert=True)
         
     reqs = clan.get('join_requests', [])
     if user['user_id'] not in reqs:
@@ -955,7 +1051,7 @@ async def apply_to_clan(callback: CallbackQuery):
     else:
         await callback.answer("Вы уже отправляли заявку!", show_alert=True)
         
-    await view_clan_card(callback)
+    await view_clan_card(callback, clan_id)
 
 @router.callback_query(F.data == "clan_requests_view")
 async def view_clan_requests(callback: CallbackQuery):
@@ -995,9 +1091,21 @@ async def accept_clan_request(callback: CallbackQuery):
     if len(members) >= max_m: return await callback.answer("В клане больше нет мест!", show_alert=True)
         
     reqs = clan.get('join_requests', [])
-    if app_id in reqs:
+    if app_id not in reqs:
+        return await callback.answer("Эта заявка уже неактуальна!", show_alert=True)
+        
+    applicant = get_user(app_id)
+    if not applicant:
         reqs.remove(app_id)
         update_clan(clan_id, join_requests=reqs)
+        return await callback.answer("Игрок не найден, заявка удалена.", show_alert=True)
+    if applicant.get('clan_id', 0) != 0:
+        reqs.remove(app_id)
+        update_clan(clan_id, join_requests=reqs)
+        return await callback.answer("Игрок уже состоит в другом клане.", show_alert=True)
+        
+    reqs.remove(app_id)
+    update_clan(clan_id, join_requests=reqs)
         
     update_user(app_id, clan_id=clan_id, clan_role='thrall')
     await callback.answer("Игрок принят в клан!")
@@ -1032,6 +1140,9 @@ async def clan_leave_do(callback: CallbackQuery, state: FSMContext):
     user = get_user(callback.from_user.id)
     clan_id = user.get('clan_id', 0)
     clan = get_clan(clan_id)
+    
+    if not clan_id:
+        return await callback.answer("Вы не состоите в клане.", show_alert=True)
     
     if clan and clan['leader_id'] == user['user_id']:
         return await callback.answer("Лидер не может просто выйти! Сначала передайте лидерство или распустите клан.", show_alert=True)

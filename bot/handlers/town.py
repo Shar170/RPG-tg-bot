@@ -1,5 +1,6 @@
 import json
 import random
+import time
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -11,6 +12,19 @@ from database import (
 )
 
 router = Router()
+
+# Лёгкий TTL-кэш для «Вестника» и топ-кланов: город перерисовывается очень часто
+_TOWN_CACHE = {}
+_TOWN_CACHE_TTL = 30
+
+def _cached(key: str, loader):
+    now = time.time()
+    ts, value = _TOWN_CACHE.get(key, (0, None))
+    if now - ts < _TOWN_CACHE_TTL:
+        return value
+    value = loader()
+    _TOWN_CACHE[key] = (now, value)
+    return value
 
 def ensure_user(user_id: int, username: str):
     user = get_user(user_id)
@@ -49,7 +63,7 @@ def generate_town_text(user: dict) -> str:
     filled = min(10, int((xp / max_xp) * 10))
     xp_bar = "█" * filled + "░" * (10 - filled)
     
-    top_clans = get_top_clans(limit=3)
+    top_clans = _cached("top_clans", lambda: get_top_clans(limit=3))
     clans_text = ""
     if top_clans:
         clans_text = "\n\n🏆 **Топ-3 кланов недели:**\n"
@@ -61,7 +75,7 @@ def generate_town_text(user: dict) -> str:
     else:
         clans_text = "\n\n🏆 **Топ-3 кланов недели:**\nПока нет активных кланов."
         
-    events = get_recent_global_events(5)
+    events = _cached("events", lambda: get_recent_global_events(5))
     log_text = "\n\n📰 **Вестник Камарии:**\n"
     if events:
         for e in events: log_text += f"• {e}\n"

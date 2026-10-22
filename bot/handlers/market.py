@@ -76,7 +76,7 @@ async def market_sell_all_loot(callback: CallbackQuery):
         sell = False
         if it['type'] == 'weapon' and it['stats'].get('dmg', 0) < curr_dmg: sell = True
         elif it['type'] == 'armor' and it['stats'].get('def', 0) < curr_def: sell = True
-        elif it['type'] not in ['weapon', 'armor']: new_bp.append(i_id) 
+        # Не-снаряжение не продаётся здесь: оно остаётся в рюкзаке (см. ветку else ниже)
         
         if sell:
             profit += int(it['base_price'] * rate)

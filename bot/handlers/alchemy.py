@@ -1,8 +1,17 @@
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+import hashlib
 from database import get_user, update_user, get_all_ingredients, get_item_name, track_stat, add_quest_progress
 
 router = Router()
+
+def _trait_group_key(title: str) -> str:
+    """Короткий ASCII-ключ для callback_data.
+
+    Названия свойств на кириллице не влезают в лимит Telegram (64 байта),
+    поэтому в кнопку кладём хэш, а полное название восстанавливаем на месте.
+    """
+    return hashlib.md5(title.encode("utf-8")).hexdigest()[:12]
 
 # --- ГЛАВНОЕ МЕНЮ АЛХИМИИ ---
 @router.callback_query(F.data == "town_alchemy")
@@ -186,10 +195,9 @@ async def produce_catalog(callback: CallbackQuery):
     buttons = []
     
     for traits_title, total_craft in list(grouped_recipes.items())[:15]: 
-        # Обрезаем строку до 30 символов, чтобы не выйти за лимит callback_data (64 байта)
-        safe_title = traits_title[:30] 
+        group_key = _trait_group_key(traits_title)
         btn_text = f"🧪 {traits_title} [доступно: {total_craft} шт]"
-        buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"alch_grp:{safe_title}")])
+        buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"alch_grp:{group_key}")])
         
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="town_alchemy")])
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
@@ -198,7 +206,7 @@ async def produce_catalog(callback: CallbackQuery):
 # --- НОВЫЙ ХЭНДЛЕР: ПОДМЕНЮ ВЫБОРА РЕЦЕПТА ---
 @router.callback_query(F.data.startswith("alch_grp:"))
 async def produce_group_select(callback: CallbackQuery):
-    safe_title = callback.data.split(":", 1)[1]
+    group_key = callback.data.split(":", 1)[1]
     user = get_user(callback.from_user.id)
     known = user.get("known_traits", {})
     all_ing = get_all_ingredients()
@@ -206,6 +214,7 @@ async def produce_group_select(callback: CallbackQuery):
 
     user_mats = [m for m in materials.keys() if materials.get(m, 0) > 0 and m in all_ing]
     buttons = []
+    matched_title = None
     
     for i in range(len(user_mats)):
         for j in range(i + 1, len(user_mats)):
@@ -217,14 +226,18 @@ async def produce_group_select(callback: CallbackQuery):
                 traits_title = ", ".join(shared_known)
                 
                 # Если сгенерированный эффект совпадает с выбранным из прошлого меню
-                if traits_title[:30] == safe_title:
+                if _trait_group_key(traits_title) == group_key:
+                    matched_title = traits_title
                     max_craft = min(materials[m1], materials[m2])
                     name1 = all_ing[m1]['name']
                     name2 = all_ing[m2]['name']
                     btn_text = f"🌿 {name1} + {name2} [до {max_craft} шт]"
                     buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"alch_prod_sel:{m1}:{m2}")])
 
-    text = f"⚗️ **Рецепты для зелья:** [{safe_title}]\n\nВыберите комбинацию ингредиентов:"
+    if not matched_title:
+        return await callback.answer("Эти рецепты больше недоступны (ингредиенты закончились).", show_alert=True)
+
+    text = f"⚗️ **Рецепты для зелья:** [{matched_title}]\n\nВыберите комбинацию ингредиентов:"
     buttons.append([InlineKeyboardButton(text="🔙 К списку зелий", callback_data="alch_mode_produce")])
     
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
@@ -270,8 +283,8 @@ async def produce_batch_select(callback: CallbackQuery):
     buttons.append(row)
     
     # Кнопка возврата теперь ведет не в корень, а в подменю конкретного зелья
-    safe_title = traits_str[:30]
-    buttons.append([InlineKeyboardButton(text="🔙 Назад к рецептам", callback_data=f"alch_grp:{safe_title}")])
+    group_key = _trait_group_key(traits_str)
+    buttons.append([InlineKeyboardButton(text="🔙 Назад к рецептам", callback_data=f"alch_grp:{group_key}")])
     
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
 

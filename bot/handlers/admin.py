@@ -1,3 +1,4 @@
+import os
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -5,11 +6,21 @@ from database import get_user, update_user, get_connection, get_player_max_energ
 
 router = Router()
 
-# Ваш Telegram ID
-ADMIN_ID = 243702559
+# ID админов берём из окружения или bot/config.py (в коде не хардкодим)
+try:
+    from config import ADMIN_ID as _CFG_ADMIN_ID
+except ImportError:
+    _CFG_ADMIN_ID = 0
+
+def _parse_ids(raw) -> set:
+    return {int(x) for x in str(raw).replace(" ", "").split(",") if x.strip().isdigit()}
+
+ADMIN_IDS = _parse_ids(os.environ.get("ADMIN_ID", "")) | _parse_ids(os.environ.get("ADMIN_IDS", ""))
+if _CFG_ADMIN_ID:
+    ADMIN_IDS.add(int(_CFG_ADMIN_ID))
 
 def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_ID
+    return user_id in ADMIN_IDS
 
 def get_admin_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[

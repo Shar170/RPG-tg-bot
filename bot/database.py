@@ -57,9 +57,6 @@ def init_db():
         try: cursor.execute("ALTER TABLE users ADD COLUMN reengagement_stage INTEGER DEFAULT 0")
         except sqlite3.OperationalError: pass
         
-        try: cursor.execute("ALTER TABLE users ADD COLUMN story_progress TEXT DEFAULT '{\"story_id\": \"\", \"chapter_id\": \"\", \"current_node_id\": \"\", \"flags\": {}}'")
-        except sqlite3.OperationalError: pass
-            
         cursor.execute('''CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY, username TEXT, state TEXT, hp INTEGER, max_hp INTEGER,
             gold INTEGER, inventory TEXT, home_data TEXT, combat_data TEXT, known_traits TEXT, dungeon_data TEXT,
@@ -68,7 +65,12 @@ def init_db():
             last_energy_time INTEGER DEFAULT 0, last_msg_id INTEGER DEFAULT 0, is_bot INTEGER DEFAULT 0, 
             dust INTEGER DEFAULT 0, pity_counter INTEGER DEFAULT 0, last_hp_time INTEGER DEFAULT 0,
             notified_hp INTEGER DEFAULT 0, notified_energy INTEGER DEFAULT 0,
-            last_active_time REAL DEFAULT 0, reengagement_stage INTEGER DEFAULT 0)''')
+            last_active_time REAL DEFAULT 0, reengagement_stage INTEGER DEFAULT 0,
+            story_progress TEXT DEFAULT '{"story_id": "", "chapter_id": "", "current_node_id": "", "flags": {}}')''')
+        
+        # Миграция для старых баз: колонки story_progress в CREATE TABLE раньше не было
+        try: cursor.execute("ALTER TABLE users ADD COLUMN story_progress TEXT DEFAULT '{\"story_id\": \"\", \"chapter_id\": \"\", \"current_node_id\": \"\", \"flags\": {}}'")
+        except sqlite3.OperationalError: pass
             
         cursor.execute('''CREATE TABLE IF NOT EXISTS global_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, timestamp REAL)''')
@@ -352,12 +354,14 @@ def simulate_bot_activity():
     if now - last_sim < 3600: return
 
     events_to_add = []
+    expired_player_lots = []
     with get_connection() as conn:
         cursor = conn.cursor()
 
         cursor.execute("SELECT lot_id, seller_id, item_id, item_type, is_bot FROM trading_post WHERE expires_at < ?", (now,))
         for lot_id, s_id, i_id, idx_type, is_b in cursor.fetchall():
-            if not is_b: give_item(s_id, i_id, idx_type, 1)
+            # Возврат предмета делаем после коммита, чтобы не открывать вложенное соединение
+            if not is_b: expired_player_lots.append((s_id, i_id, idx_type))
             cursor.execute("DELETE FROM trading_post WHERE lot_id=?", (lot_id,))
             
         cursor.execute("SELECT COUNT(*) FROM trading_post WHERE is_bot=0")
@@ -376,8 +380,8 @@ def simulate_bot_activity():
                 bp = get_item_price(i_id)
                 if price <= bp * 0.9 and random.random() < 0.5:
                     cursor.execute("DELETE FROM trading_post WHERE lot_id=?", (lot_id,))
-                    u = get_user(s_id)
-                    if u: update_user(s_id, gold=u['gold'] + price)
+                    # Атомарное начисление: без чтения/записи через отдельное соединение
+                    cursor.execute("UPDATE users SET gold = gold + ? WHERE user_id = ?", (price, s_id))
 
         cursor.execute("SELECT username, clan_id FROM users WHERE is_bot=1 ORDER BY RANDOM() LIMIT 3")
         bots = cursor.fetchall()
@@ -399,6 +403,10 @@ def simulate_bot_activity():
         
         cursor.execute("INSERT OR REPLACE INTO game_settings (key, value) VALUES ('last_bot_sim', ?)", (str(now),))
         conn.commit()
+
+    # Возврат истёкших лотов — уже после коммита, без вложенных транзакций
+    for s_id, i_id, i_type in expired_player_lots:
+        give_item(s_id, i_id, i_type, 1)
 
     for evt in events_to_add:
         add_global_event(evt)
@@ -425,7 +433,8 @@ def seed_all():
             ("mg_lock_gold_max", "250"), ("mg_lock_gem_chance", "0.15"),
             ("mg_lock_gem_amount", "2")
         ]
-        cursor.executemany("INSERT OR REPLACE INTO game_settings VALUES (?, ?)", settings)
+        # INSERT OR IGNORE: не перезаписываем настройки, изменённые в админ-панели
+        cursor.executemany("INSERT OR IGNORE INTO game_settings VALUES (?, ?)", settings)
         
         # Импортированные таблицы (карточки, предметы, локации, мобы)
         cursor.executemany("INSERT OR REPLACE INTO card_sets VALUES (?, ?, ?, ?, ?, ?)", CARD_SETS)
@@ -472,6 +481,9 @@ def give_item(user_id: int, item_id: str, item_type: str, amount: int = 1):
         elif item_type == 'material':
             inv.setdefault('materials', {})[item_id] = inv.get('materials', {}).get(item_id, 0) + amount
             update_user(user_id, inventory=inv)
+        elif item_type == 'consumable':
+            for _ in range(amount): inv.setdefault('potions', []).append(item_id)
+            update_user(user_id, inventory=inv)
         conn.commit()
 
 def take_item(user_id: int, item_id: str, item_type: str, amount: int = 1) -> bool:
@@ -502,6 +514,12 @@ def take_item(user_id: int, item_id: str, item_type: str, amount: int = 1) -> bo
             if inv.get('materials', {}).get(item_id, 0) >= amount:
                 inv['materials'][item_id] -= amount
                 if inv['materials'][item_id] <= 0: del inv['materials'][item_id]
+                update_user(user_id, inventory=inv)
+                success = True
+        elif item_type == 'consumable':
+            potions = inv.get('potions', [])
+            if item_id in potions:
+                potions.remove(item_id)
                 update_user(user_id, inventory=inv)
                 success = True
         conn.commit()
@@ -1074,11 +1092,20 @@ def update_pvp_match(match_id: int, **kwargs):
         for key, value in kwargs.items():
             cursor.execute(f"UPDATE pvp_matches SET {key} = ? WHERE match_id = ?", (value, match_id))
         conn.commit()
-        
-def remove_from_queue(user_id: int):
+
+def delete_pvp_match(match_id: int):
     with get_connection() as conn:
-        conn.cursor().execute("DELETE FROM arena_queue WHERE user_id = ?", (user_id,))
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM pvp_matches WHERE match_id = ?", (match_id,))
         conn.commit()
+        
+def remove_from_queue(user_id: int) -> bool:
+    """Убирает игрока из очереди арены. Возвращает True, если он там был."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM arena_queue WHERE user_id = ?", (user_id,))
+        conn.commit()
+        return cursor.rowcount > 0
 
 def roll_card(user_id: int, theme: str = None) -> dict:
     user = get_user(user_id)

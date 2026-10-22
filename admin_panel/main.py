@@ -4,16 +4,42 @@ import pandas as pd
 import json
 import os
 import io
+from contextlib import closing
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, '..', 'bot', 'game_data.db')
+# Путь к БД можно переопределить переменной окружения (на сервере БД может лежать отдельно)
+DB_PATH = os.path.abspath(os.environ.get("RPG_DB_PATH") or os.path.join(BASE_DIR, '..', 'bot', 'game_data.db'))
 
 st.set_page_config(page_title="Kamaria RPG Admin", layout="wide", page_icon="🛡️")
 
 # ==========================================
 # 🔒 АВТОРИЗАЦИЯ
 # ==========================================
-ADMIN_PASSWORD = "gargon900"  # <-- ВПИШИ СЮДА СВОЙ НАДЕЖНЫЙ ПАРОЛЬ
+def _load_admin_password() -> str:
+    """Пароль из переменной окружения или bot/config.py. В коде паролей не храним."""
+    pwd = os.environ.get("ADMIN_PASSWORD", "").strip()
+    if pwd:
+        return pwd
+    cfg_path = os.path.join(BASE_DIR, "..", "bot", "config.py")
+    if os.path.exists(cfg_path):
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("bot_config_admin", cfg_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return str(getattr(mod, "ADMIN_PASSWORD", "") or "").strip()
+        except Exception:
+            return ""
+    return ""
+
+ADMIN_PASSWORD = _load_admin_password()
+
+if not ADMIN_PASSWORD:
+    st.error(
+        "Не задан пароль администратора. Укажите переменную окружения `ADMIN_PASSWORD` "
+        "или добавьте `ADMIN_PASSWORD = \"...\"` в bot/config.py."
+    )
+    st.stop()
 
 if 'authenticated' not in st.session_state:
     st.session_state['authenticated'] = False
@@ -35,63 +61,78 @@ if not st.session_state['authenticated']:
 # ==========================================
 # ФУНКЦИИ БАЗЫ ДАННЫХ
 # ==========================================
-def get_conn(): 
-    conn = sqlite3.connect(DB_PATH)
-    try: conn.execute("ALTER TABLE bestiary ADD COLUMN skills TEXT DEFAULT '{}'")
-    except: pass
-    try: conn.execute("ALTER TABLE bestiary ADD COLUMN gold_min INTEGER DEFAULT 5")
-    except: pass
-    try: conn.execute("ALTER TABLE bestiary ADD COLUMN gold_max INTEGER DEFAULT 15")
-    except: pass
-    try: conn.execute("ALTER TABLE bestiary ADD COLUMN xp_reward INTEGER DEFAULT 10")
-    except: pass
-    try: conn.execute("CREATE TABLE IF NOT EXISTS game_settings (key TEXT PRIMARY KEY, value TEXT)")
-    except: pass
-    try: conn.execute("CREATE TABLE IF NOT EXISTS home_skins (skin_id TEXT PRIMARY KEY, name TEXT, type TEXT, price INTEGER DEFAULT 0, requirements TEXT DEFAULT '{}', desc TEXT DEFAULT '')")
-    except: pass
-    
-    # Новые колонки для подземелий
-    try: conn.execute("ALTER TABLE daily_dungeons ADD COLUMN min_rooms INTEGER DEFAULT 3")
-    except sqlite3.OperationalError: pass
-    try: conn.execute("ALTER TABLE daily_dungeons ADD COLUMN max_rooms INTEGER DEFAULT 4")
-    except sqlite3.OperationalError: pass
-    try: conn.execute("ALTER TABLE daily_dungeons ADD COLUMN room_weights TEXT DEFAULT '{\"combat\": 50, \"puzzle\": 20, \"treasure\": 15, \"empty\": 15}'")
-    except sqlite3.OperationalError: pass
-    
-    try: conn.execute("ALTER TABLE war_regions ADD COLUMN min_rooms INTEGER DEFAULT 4")
-    except sqlite3.OperationalError: pass
-    try: conn.execute("ALTER TABLE war_regions ADD COLUMN max_rooms INTEGER DEFAULT 6")
-    except sqlite3.OperationalError: pass
-    try: conn.execute("ALTER TABLE war_regions ADD COLUMN room_weights TEXT DEFAULT '{\"combat\": 60, \"puzzle\": 15, \"treasure\": 15, \"empty\": 10}'")
-    except sqlite3.OperationalError: pass
+def get_conn():
+    """Новое соединение с БД. Закрывайте его через with closing(get_conn())."""
+    return sqlite3.connect(DB_PATH, timeout=10)
 
-    # Новая таблица соло-данжей
-    conn.execute('''CREATE TABLE IF NOT EXISTS solo_dungeons (
-        id TEXT PRIMARY KEY, name TEXT, desc TEXT, mobs TEXT, boss_id TEXT, 
-        min_rooms INTEGER DEFAULT 3, max_rooms INTEGER DEFAULT 5, 
-        room_weights TEXT DEFAULT '{"combat": 40, "puzzle": 30, "treasure": 20, "empty": 10}')''')
+@st.cache_resource
+def init_admin_schema():
+    """Миграции схемы выполняются один раз за запуск панели, а не на каждый запрос."""
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    try:
+        try: conn.execute("ALTER TABLE bestiary ADD COLUMN skills TEXT DEFAULT '{}'")
+        except: pass
+        try: conn.execute("ALTER TABLE bestiary ADD COLUMN gold_min INTEGER DEFAULT 5")
+        except: pass
+        try: conn.execute("ALTER TABLE bestiary ADD COLUMN gold_max INTEGER DEFAULT 15")
+        except: pass
+        try: conn.execute("ALTER TABLE bestiary ADD COLUMN xp_reward INTEGER DEFAULT 10")
+        except: pass
+        try: conn.execute("CREATE TABLE IF NOT EXISTS game_settings (key TEXT PRIMARY KEY, value TEXT)")
+        except: pass
+        try: conn.execute("CREATE TABLE IF NOT EXISTS home_skins (skin_id TEXT PRIMARY KEY, name TEXT, type TEXT, price INTEGER DEFAULT 0, requirements TEXT DEFAULT '{}', desc TEXT DEFAULT '')")
+        except: pass
 
-    # ТАБЛИЦЫ СЮЖЕТА
-    conn.execute('''CREATE TABLE IF NOT EXISTS stories (
-        id TEXT PRIMARY KEY, title TEXT, desc TEXT, req_admin INTEGER DEFAULT 0, start_node_id TEXT DEFAULT 'node_start')''')
-    try: conn.execute("ALTER TABLE stories ADD COLUMN start_node_id TEXT DEFAULT 'node_start'")
-    except sqlite3.OperationalError: pass
-    
-    conn.execute('''CREATE TABLE IF NOT EXISTS story_chapters (
-        id TEXT PRIMARY KEY, story_id TEXT, title TEXT)''')
-    conn.execute('''CREATE TABLE IF NOT EXISTS story_nodes (
-        id TEXT PRIMARY KEY, chapter_id TEXT, node_type TEXT, text TEXT, extra_data TEXT DEFAULT '{}')''')
-    conn.execute('''CREATE TABLE IF NOT EXISTS story_choices (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, node_id TEXT, text TEXT, req_cond TEXT DEFAULT '{}', action_data TEXT DEFAULT '{}', next_node_id TEXT)''')
+        # Новые колонки для подземелий
+        try: conn.execute("ALTER TABLE daily_dungeons ADD COLUMN min_rooms INTEGER DEFAULT 3")
+        except sqlite3.OperationalError: pass
+        try: conn.execute("ALTER TABLE daily_dungeons ADD COLUMN max_rooms INTEGER DEFAULT 4")
+        except sqlite3.OperationalError: pass
+        try: conn.execute("ALTER TABLE daily_dungeons ADD COLUMN room_weights TEXT DEFAULT '{\"combat\": 50, \"puzzle\": 20, \"treasure\": 15, \"empty\": 15}'")
+        except sqlite3.OperationalError: pass
 
-    conn.commit()
-    return conn
+        try: conn.execute("ALTER TABLE war_regions ADD COLUMN min_rooms INTEGER DEFAULT 4")
+        except sqlite3.OperationalError: pass
+        try: conn.execute("ALTER TABLE war_regions ADD COLUMN max_rooms INTEGER DEFAULT 6")
+        except sqlite3.OperationalError: pass
+        try: conn.execute("ALTER TABLE war_regions ADD COLUMN room_weights TEXT DEFAULT '{\"combat\": 60, \"puzzle\": 15, \"treasure\": 15, \"empty\": 10}'")
+        except sqlite3.OperationalError: pass
+
+        # Новая таблица соло-данжей
+        conn.execute('''CREATE TABLE IF NOT EXISTS solo_dungeons (
+            id TEXT PRIMARY KEY, name TEXT, desc TEXT, mobs TEXT, boss_id TEXT, 
+            min_rooms INTEGER DEFAULT 3, max_rooms INTEGER DEFAULT 5, 
+            room_weights TEXT DEFAULT '{"combat": 40, "puzzle": 30, "treasure": 20, "empty": 10}')''')
+
+        # ТАБЛИЦЫ СЮЖЕТА
+        conn.execute('''CREATE TABLE IF NOT EXISTS stories (
+            id TEXT PRIMARY KEY, title TEXT, desc TEXT, req_admin INTEGER DEFAULT 0, start_node_id TEXT DEFAULT 'node_start')''')
+        try: conn.execute("ALTER TABLE stories ADD COLUMN start_node_id TEXT DEFAULT 'node_start'")
+        except sqlite3.OperationalError: pass
+
+        conn.execute('''CREATE TABLE IF NOT EXISTS story_chapters (
+            id TEXT PRIMARY KEY, story_id TEXT, title TEXT)''')
+        conn.execute('''CREATE TABLE IF NOT EXISTS story_nodes (
+            id TEXT PRIMARY KEY, chapter_id TEXT, node_type TEXT, text TEXT, extra_data TEXT DEFAULT '{}')''')
+        conn.execute('''CREATE TABLE IF NOT EXISTS story_choices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, node_id TEXT, text TEXT, req_cond TEXT DEFAULT '{}', action_data TEXT DEFAULT '{}', next_node_id TEXT)''')
+
+        conn.commit()
+    finally:
+        conn.close()
+
+init_admin_schema()
 
 def fetch_table(table):
-    return pd.read_sql_query(f"SELECT * FROM {table}", get_conn())
+    try:
+        with closing(get_conn()) as conn:
+            return pd.read_sql_query(f"SELECT * FROM {table}", conn)
+    except Exception as e:
+        st.warning(f"Не удалось прочитать таблицу {table}: {e}")
+        return pd.DataFrame()
 
 def save_simple_table(table_name, original_df, edited_df, pk_col):
-    with get_conn() as conn:
+    with closing(get_conn()) as conn:
         cursor = conn.cursor()
         orig_keys = set(original_df[pk_col].astype(str))
         edit_keys = set(edited_df[pk_col].astype(str))
@@ -107,7 +148,7 @@ def save_simple_table(table_name, original_df, edited_df, pk_col):
         conn.commit()
 
 def get_all_items_dict():
-    with get_conn() as conn:
+    with closing(get_conn()) as conn:
         items = conn.execute("SELECT item_id, name, type FROM items").fetchall()
         alch = conn.execute("SELECT item_id, name FROM alchemy_ingredients").fetchall()
         d = {}
@@ -117,7 +158,7 @@ def get_all_items_dict():
 
 def get_db_schema():
     schema = {}
-    with get_conn() as conn:
+    with closing(get_conn()) as conn:
         tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()]
         for t in tables:
             cols = [c[1] for c in conn.execute(f"PRAGMA table_info({t})").fetchall()]
@@ -141,7 +182,7 @@ with st.sidebar:
     if st.button("▶️ Выполнить в боковой", use_container_width=True):
         if quick_sql.strip():
             try:
-                with get_conn() as conn:
+                with closing(get_conn()) as conn:
                     cur = conn.cursor()
                     q = quick_sql.strip()
                     if q.lower().startswith(("select", "pragma", "explain")):
@@ -220,7 +261,7 @@ with tab1:
             
             if st.form_submit_button("💾 Сохранить Монстра"):
                 new_skills = json.dumps({"dodge": s_dodge, "counter": s_counter, "reposition": s_repo, "poison": s_poison, "burn": s_burn, "heal": s_heal})
-                with get_conn() as conn:
+                with closing(get_conn()) as conn:
                     conn.execute("UPDATE bestiary SET hp_min=?, hp_max=?, dmg_min=?, dmg_max=?, row_pref=?, skills=?, gold_min=?, gold_max=?, xp_reward=? WHERE mob_id=?", 
                                  (new_hp_min, new_hp_max, new_dmg_min, new_dmg_max, new_pref, new_skills, new_gold_min, new_gold_max, new_mob_xp, str(mob['mob_id'])))
                     conn.commit()
@@ -242,7 +283,7 @@ with tab2:
                 qty = st.number_input("Количество", min_value=1, value=1)
                 
                 if st.form_submit_button("Выдать в инвентарь"):
-                    with get_conn() as conn:
+                    with closing(get_conn()) as conn:
                         cur = conn.execute("SELECT inventory FROM users WHERE user_id=?", (int(user['user_id']),))
                         inv = json.loads(cur.fetchone()[0])
                         itype = all_items[sel_item]['type']
@@ -294,7 +335,7 @@ with tab2:
                 try:
                     parsed_inv = json.loads(inv_str)
                     parsed_home = json.loads(home_str)
-                    with get_conn() as conn:
+                    with closing(get_conn()) as conn:
                         conn.execute("""
                             UPDATE users SET 
                                 gold=?, gems=?, energy=?, hp=?, max_hp=?, level=?, xp=?, 
@@ -341,7 +382,7 @@ with tab3:
             if st.form_submit_button("💾 Сохранить Клан"):
                 try:
                     parsed_vault = json.loads(vault_str)
-                    with get_conn() as conn:
+                    with closing(get_conn()) as conn:
                         conn.execute("""
                             UPDATE clans SET 
                                 name=?, leader_id=?, level=?, treasury=?, 
@@ -360,10 +401,11 @@ with tab3:
                     
         st.markdown("### 👥 Текущие участники клана")
         try:
-            members_df = pd.read_sql_query(
-                f"SELECT user_id, username, level, clan_role, state FROM users WHERE clan_id={clan['clan_id']} ORDER BY level DESC", 
-                get_conn()
-            )
+            with closing(get_conn()) as conn:
+                members_df = pd.read_sql_query(
+                    f"SELECT user_id, username, level, clan_role, state FROM users WHERE clan_id={clan['clan_id']} ORDER BY level DESC", 
+                    conn
+                )
             st.dataframe(members_df, use_container_width=True)
         except Exception as e:
             st.warning("Не удалось загрузить участников.")
@@ -412,7 +454,7 @@ with tab4:
             if st.form_submit_button("Добавить рецепт"):
                 try:
                     json.loads(new_mats_json)
-                    with get_conn() as conn:
+                    with closing(get_conn()) as conn:
                         conn.execute("INSERT OR REPLACE INTO recipes (recipe_id, result_item_id, materials_needed, gold_cost) VALUES (?, ?, ?, ?)",
                                      (new_r_id.strip(), new_res_id, new_mats_json.strip(), int(new_gold_cost)))
                         conn.commit()
@@ -489,7 +531,7 @@ with tab5:
             is_select = q.lower().startswith(("select", "pragma", "explain", "with")) and ";" not in q.rstrip(";")
             
             try:
-                with get_conn() as conn:
+                with closing(get_conn()) as conn:
                     cursor = conn.cursor()
                     
                     if is_select:
@@ -561,7 +603,7 @@ with tab7:
     )
 
     if st.button("⚙️️ Сгенерировать SQL скрипт"):
-        with get_conn() as conn:
+        with closing(get_conn()) as conn:
             dump_lines = []
             
             for line in conn.iterdump():
@@ -632,7 +674,7 @@ with tab8:
                 else:
                     try:
                         json.loads(new_skin_req)
-                        with get_conn() as conn:
+                        with closing(get_conn()) as conn:
                             conn.execute("""
                                 INSERT OR REPLACE INTO home_skins (skin_id, name, type, price, requirements, desc)
                                 VALUES (?, ?, ?, ?, ?, ?)
@@ -750,7 +792,7 @@ with tab11:
                         st.error("Заполните ID и Название!")
                     else:
                         r_admin = 0 if is_public else admin_id
-                        with get_conn() as conn:
+                        with closing(get_conn()) as conn:
                             conn.execute("INSERT OR REPLACE INTO stories (id, title, desc, req_admin, start_node_id) VALUES (?, ?, ?, ?, ?)",
                                          (s_id.strip(), s_title.strip(), s_desc.strip(), int(r_admin), s_start.strip()))
                             conn.commit()
@@ -767,7 +809,7 @@ with tab11:
                     if not c_id or not c_st_id:
                         st.error("Заполните ID Главы и выберите кампанию!")
                     else:
-                        with get_conn() as conn:
+                        with closing(get_conn()) as conn:
                             conn.execute("INSERT OR REPLACE INTO story_chapters (id, story_id, title) VALUES (?, ?, ?)",
                                          (c_id.strip(), c_st_id, c_title.strip()))
                             conn.commit()
@@ -802,7 +844,7 @@ with tab11:
                 else:
                     try:
                         json.loads(n_extra) # Валидация JSON
-                        with get_conn() as conn:
+                        with closing(get_conn()) as conn:
                             conn.execute("INSERT OR REPLACE INTO story_nodes (id, chapter_id, node_type, text, extra_data) VALUES (?, ?, ?, ?, ?)",
                                          (n_id.strip(), n_chap, n_type, n_text.strip(), n_extra.strip()))
                             conn.commit()
@@ -845,7 +887,7 @@ with tab11:
                     try:
                         json.loads(c_req)
                         json.loads(c_act)
-                        with get_conn() as conn:
+                        with closing(get_conn()) as conn:
                             if c_id == 0:
                                 conn.execute("INSERT INTO story_choices (node_id, text, req_cond, action_data, next_node_id) VALUES (?, ?, ?, ?, ?)",
                                              (c_node, c_text.strip(), c_req.strip(), c_act.strip(), c_next.strip()))

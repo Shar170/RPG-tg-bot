@@ -6,7 +6,7 @@ from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from database import (
     get_user, update_user, get_connection, get_pvp_match, update_pvp_match, 
-    remove_from_queue, track_stat, add_global_event, get_item, get_setting, 
+    remove_from_queue, delete_pvp_match, track_stat, add_global_event, get_item, get_setting, 
     calculate_damage_received, consume_energy
 )
 
@@ -114,8 +114,12 @@ async def arena_join(callback: CallbackQuery):
 @router.callback_query(F.data == "arena_cancel")
 async def arena_cancel(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
-    remove_from_queue(user['user_id'])
-    
+
+    # Взнос возвращаем только если игрок действительно стоял в очереди.
+    # Иначе кнопку можно было бы нажимать бесконечно и фармить золото/энергию.
+    if not remove_from_queue(user['user_id']):
+        return await callback.answer("Вы не находитесь в очереди поиска — взнос не возвращается.", show_alert=True)
+
     user['gold'] += 100
     user['energy'] = min(user.get('energy', 5) + 1, 999) # Возвращаем энергию за отмену
     update_user(user['user_id'], state='STATE_TOWN', gold=user['gold'], energy=user['energy'])
@@ -164,12 +168,10 @@ async def pvp_noop(callback: CallbackQuery):
     if not match: 
         return await callback.answer("Матч не найден!", show_alert=True)
         
-    elapsed = time.time() - match.get('last_action_time', time.time())
-    if elapsed > 300:
-        await end_pvp_draw(callback.bot, match_id, "Один из игроков покинул Арену (AFK 5 минут).")
+    if await check_pvp_afk(callback.bot, match_id, match):
         return await callback.answer("Техническая ничья по тайм-ауту.")
         
-    left = int(300 - elapsed)
+    left = int(PVP_AFK_TIMEOUT - (time.time() - match.get('last_action_time', time.time())))
     await callback.answer(f"Сейчас ход противника! До авто-ничьей (AFK): {left} сек.", show_alert=False)
 
 async def render_pvp(bot, match_id: int):
@@ -207,11 +209,24 @@ async def render_pvp(bot, match_id: int):
         try: await bot.edit_message_text(p2_text, chat_id=p2['user_id'], message_id=p2['last_msg_id'], reply_markup=get_pvp_kb(p2_turn, match['p2_ap'], state.get('distance', 'close')), parse_mode="Markdown")
         except Exception: pass
 
+PVP_AFK_TIMEOUT = 300
+
+async def check_pvp_afk(bot, match_id: int, match: dict) -> bool:
+    """Если ход завис дольше таймаута — фиксируем ничью. True, если матч уже завершён."""
+    if not match:
+        return False
+    elapsed = time.time() - match.get('last_action_time', time.time())
+    if elapsed > PVP_AFK_TIMEOUT:
+        await end_pvp_draw(bot, match_id, "Один из игроков покинул Арену (AFK 5 минут).")
+        return True
+    return False
+
 async def end_pvp_match(bot, match_id: int, winner_id: int, loser_id: int, reason_log: str):
     winner = get_user(winner_id)
     loser = get_user(loser_id)
     
-    reward = 200
+    # Бот не платил взнос, поэтому победа над ботом возвращает только свой взнос
+    reward = 100 if loser and loser.get('is_bot', 0) == 1 else 200
     winner['gold'] += reward
     track_stat(winner_id, 'pvp_wins', 1)
     
@@ -231,6 +246,8 @@ async def end_pvp_match(bot, match_id: int, winner_id: int, loser_id: int, reaso
     if loser.get('is_bot', 0) == 0:
         try: await bot.edit_message_text(lose_txt, chat_id=loser_id, message_id=loser['last_msg_id'], reply_markup=get_town_kb(loser), parse_mode="Markdown")
         except Exception: pass
+        
+    delete_pvp_match(match_id)
 
 async def end_pvp_draw(bot, match_id: int, reason_log: str):
     match = get_pvp_match(match_id)
@@ -252,6 +269,8 @@ async def end_pvp_draw(bot, match_id: int, reason_log: str):
     if p2.get('is_bot', 0) == 0:
         try: await bot.edit_message_text(draw_txt, chat_id=p2['user_id'], message_id=p2['last_msg_id'], reply_markup=get_town_kb(p2), parse_mode="Markdown")
         except Exception: pass
+        
+    delete_pvp_match(match_id)
 
 # --- ЛОГИКА ИСКУССТВЕННОГО ИНТЕЛЛЕКТА (БОТА) ---
 async def process_bot_turn(bot, match_id: int):
@@ -406,6 +425,7 @@ async def pvp_move(callback: CallbackQuery):
     match = get_pvp_match(match_id)
     
     if not match or match['turn'] != user['user_id']: return await callback.answer("Сейчас не ваш ход!", show_alert=True)
+    if await check_pvp_afk(callback.bot, match_id, match): return await callback.answer("Матч завершён по тайм-ауту.")
         
     is_p1 = (user['user_id'] == match['p1_id'])
     ap_key = 'p1_ap' if is_p1 else 'p2_ap'
@@ -433,6 +453,7 @@ async def pvp_attack(callback: CallbackQuery):
     match = get_pvp_match(match_id)
     
     if not match or match['turn'] != user['user_id']: return await callback.answer("Сейчас не ваш ход!", show_alert=True)
+    if await check_pvp_afk(callback.bot, match_id, match): return await callback.answer("Матч завершён по тайм-ауту.")
         
     is_p1 = (user['user_id'] == match['p1_id'])
     ap_key = 'p1_ap' if is_p1 else 'p2_ap'
@@ -499,7 +520,16 @@ async def pvp_attack(callback: CallbackQuery):
 @router.callback_query(F.data == "pvp_potion")
 async def pvp_potion_menu(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
-    match = get_pvp_match(user.get('combat_data', {}).get('pvp_match_id'))
+    match_id = user.get('combat_data', {}).get('pvp_match_id')
+    match = get_pvp_match(match_id)
+    
+    if not match:
+        return await callback.answer("Матч не найден!", show_alert=True)
+    if match['turn'] != user['user_id']:
+        return await callback.answer("Сейчас не ваш ход!", show_alert=True)
+    if await check_pvp_afk(callback.bot, match_id, match):
+        return await callback.answer("Матч завершён по тайм-ауту.")
+        
     is_p1 = (user['user_id'] == match['p1_id'])
     
     if match['p1_ap' if is_p1 else 'p2_ap'] < 1:
@@ -511,7 +541,9 @@ async def pvp_potion_menu(callback: CallbackQuery):
 
     buttons = []
     for i, p in enumerate(potions):
-        buttons.append([InlineKeyboardButton(text=f"Выпить: {p} (x{inv['potions'].count(p)})", callback_data=f"pvp_drink_{i}")])
+        item_data = get_item(p)
+        p_name = item_data['name'] if item_data else p
+        buttons.append([InlineKeyboardButton(text=f"Выпить: {p_name} (x{inv['potions'].count(p)})", callback_data=f"pvp_drink_{i}")])
     buttons.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="pvp_drink_cancel")])
     await callback.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
@@ -519,16 +551,30 @@ async def pvp_potion_menu(callback: CallbackQuery):
 async def pvp_drink_cancel(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     match = get_pvp_match(user.get('combat_data', {}).get('pvp_match_id'))
+    if not match:
+        return await callback.answer("Матч не найден!", show_alert=True)
     is_p1 = (user['user_id'] == match['p1_id'])
     state = json.loads(match.get('match_state', '{}'))
-    await callback.message.edit_reply_markup(reply_markup=get_pvp_kb(True, match['p1_ap' if is_p1 else 'p2_ap'], state.get('distance', 'close')))
+    is_my_turn = (match['turn'] == user['user_id'])
+    await callback.message.edit_reply_markup(reply_markup=get_pvp_kb(is_my_turn, match['p1_ap' if is_p1 else 'p2_ap'], state.get('distance', 'close')))
 
 @router.callback_query(F.data.startswith("pvp_drink_"))
 async def execute_drink_pvp(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     match_id = user.get('combat_data', {}).get('pvp_match_id')
     match = get_pvp_match(match_id)
+    
+    if not match:
+        return await callback.answer("Матч не найден!", show_alert=True)
+    if match['turn'] != user['user_id']:
+        return await callback.answer("Сейчас не ваш ход!", show_alert=True)
+    if await check_pvp_afk(callback.bot, match_id, match):
+        return await callback.answer("Матч завершён по тайм-ауту.")
+        
     is_p1 = (user['user_id'] == match['p1_id'])
+    ap_key = 'p1_ap' if is_p1 else 'p2_ap'
+    if match[ap_key] < 1:
+        return await callback.answer("Недостаточно ОД!", show_alert=True)
     
     inv = user['inventory']
     idx = int(callback.data.replace("pvp_drink_", ""))
@@ -545,34 +591,59 @@ async def execute_drink_pvp(callback: CallbackQuery):
     my_buffs = state.setdefault(my_buffs_key, {})
     opp_buffs = state.setdefault(opp_buffs_key, {})
     
-    p_lower = used_item.lower()
-    positive = ["хил", "реген", "рагу", "броня", "сила", "уклонение", "очищение", "защита"]
-    is_thrown = not any(pos in p_lower for pos in positive)
-    log = f"🧪 {user['username']} бросил [{used_item}]!" if is_thrown else f"🧪 {user['username']} выпил [{used_item}]!"
-    
     dmg_to_opp = 0
     heal_to_me = 0
     ap_gain = -1 
     
-    if "хил" in p_lower or "реген хп" in p_lower or "рагу" in p_lower: heal_to_me += int(user['max_hp'] * 0.25)
-    if "броня" in p_lower: my_buffs['buff_armor'] = my_buffs.get('buff_armor', 0) + 15; my_buffs['buff_armor_t'] = 3
-    if "сила" in p_lower and "тьмы" not in p_lower: my_buffs['buff_str'] = my_buffs.get('buff_str', 0) + 20; my_buffs['buff_str_t'] = 2
-    if "уклонение" in p_lower: my_buffs['buff_dodge'] = 1; my_buffs['buff_dodge_t'] = 2
-    if "очищение" in p_lower: 
-        my_buffs['debuff_blind'] = 0; my_buffs['debuff_fragile'] = 0; my_buffs['debuff_vuln'] = 0; my_buffs['dot_burn'] = 0; my_buffs['dot_poison'] = 0; my_buffs['dot_bleed'] = 0
+    item_data = get_item(used_item)
+    if item_data and item_data.get('type') == 'consumable':
+        # Стандартные предметы из БД (в инвентаре хранится item_id)
+        name = item_data.get('name', used_item)
+        stats = item_data.get('stats', {})
+        effect = stats.get('effect')
+        heal_pct = stats.get('heal_pct')
+        is_thrown = effect in ["escape", "bleed", "vuln"]
+        log = f"🧪 {user['username']} бросил [{name}]!" if is_thrown else f"🧪 {user['username']} выпил [{name}]!"
         
-    if "урон огнем" in p_lower: dmg_to_opp += 30; opp_buffs['dot_burn'] = 3
-    if "урон ядом" in p_lower: dmg_to_opp += 20; opp_buffs['dot_poison'] = 4
-    if "кровотечение" in p_lower: opp_buffs['dot_bleed'] = 3
-    if "урон льдом" in p_lower: dmg_to_opp += 25; state['distance'] = "far"
-    if "оцепенение" in p_lower or "сон" in p_lower: opp_buffs['stun'] = 1
-    
-    if "хрупкость" in p_lower:
-        if is_thrown: opp_buffs['debuff_vuln'] = 3
-        else: my_buffs['debuff_fragile'] = 3
-    if "слепота" in p_lower:
-        if is_thrown: opp_buffs['debuff_blind'] = 2
-        else: my_buffs['debuff_blind'] = 2
+        if heal_pct:
+            heal_to_me += int(user['max_hp'] * heal_pct)
+        if effect == "escape":
+            my_buffs['buff_dodge'] = 1; my_buffs['buff_dodge_t'] = 2
+        elif effect == "bleed":
+            opp_buffs['dot_bleed'] = 3
+        elif effect == "vuln":
+            opp_buffs['debuff_vuln'] = 3
+        elif effect == "cleanse":
+            my_buffs['debuff_blind'] = 0; my_buffs['debuff_fragile'] = 0; my_buffs['debuff_vuln'] = 0
+            my_buffs['dot_burn'] = 0; my_buffs['dot_poison'] = 0; my_buffs['dot_bleed'] = 0
+        elif effect == "ap_boost":
+            ap_gain += 3
+    else:
+        # Кастомные зелья алхимии: в инвентаре лежит русское название
+        p_lower = used_item.lower()
+        positive = ["хил", "реген", "рагу", "броня", "сила", "уклонение", "очищение", "защита"]
+        is_thrown = not any(pos in p_lower for pos in positive)
+        log = f"🧪 {user['username']} бросил [{used_item}]!" if is_thrown else f"🧪 {user['username']} выпил [{used_item}]!"
+        
+        if "хил" in p_lower or "реген хп" in p_lower or "рагу" in p_lower: heal_to_me += int(user['max_hp'] * 0.25)
+        if "броня" in p_lower: my_buffs['buff_armor'] = my_buffs.get('buff_armor', 0) + 15; my_buffs['buff_armor_t'] = 3
+        if "сила" in p_lower and "тьмы" not in p_lower: my_buffs['buff_str'] = my_buffs.get('buff_str', 0) + 20; my_buffs['buff_str_t'] = 2
+        if "уклонение" in p_lower: my_buffs['buff_dodge'] = 1; my_buffs['buff_dodge_t'] = 2
+        if "очищение" in p_lower: 
+            my_buffs['debuff_blind'] = 0; my_buffs['debuff_fragile'] = 0; my_buffs['debuff_vuln'] = 0; my_buffs['dot_burn'] = 0; my_buffs['dot_poison'] = 0; my_buffs['dot_bleed'] = 0
+            
+        if "урон огнем" in p_lower: dmg_to_opp += 30; opp_buffs['dot_burn'] = 3
+        if "урон ядом" in p_lower: dmg_to_opp += 20; opp_buffs['dot_poison'] = 4
+        if "кровотечение" in p_lower: opp_buffs['dot_bleed'] = 3
+        if "урон льдом" in p_lower: dmg_to_opp += 25; state['distance'] = "far"
+        if "оцепенение" in p_lower or "сон" in p_lower: opp_buffs['stun'] = 1
+        
+        if "хрупкость" in p_lower:
+            if is_thrown: opp_buffs['debuff_vuln'] = 3
+            else: my_buffs['debuff_fragile'] = 3
+        if "слепота" in p_lower:
+            if is_thrown: opp_buffs['debuff_blind'] = 2
+            else: my_buffs['debuff_blind'] = 2
         
     if is_p1:
         match['p1_hp'] = min(match['p1_max'], match['p1_hp'] + heal_to_me)
@@ -598,6 +669,7 @@ async def pvp_end_turn(callback: CallbackQuery):
     match = get_pvp_match(match_id)
     
     if not match or match['turn'] != user['user_id']: return await callback.answer()
+    if await check_pvp_afk(callback.bot, match_id, match): return await callback.answer("Матч завершён по тайм-ауту.")
         
     is_p1 = (user['user_id'] == match['p1_id'])
     next_turn = match['p2_id'] if is_p1 else match['p1_id']
@@ -644,6 +716,7 @@ async def pvp_surrender(callback: CallbackQuery):
     match = get_pvp_match(match_id)
     
     if not match: return await callback.answer()
+    if await check_pvp_afk(callback.bot, match_id, match): return await callback.answer("Матч завершён по тайм-ауту.")
         
     winner_id = match['p2_id'] if user['user_id'] == match['p1_id'] else match['p1_id']
     await end_pvp_match(callback.bot, match_id, winner_id, user['user_id'], f"🏳️ {user['username']} позорно бежал с поля боя!")

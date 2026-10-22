@@ -47,9 +47,8 @@ def get_tp_limits(item_id: str, item_type: str):
         return int(bp * 0.5), int(bp * 3.0)
 
 # --- ГЛАВНОЕ МЕНЮ ТП ---
-@router.callback_query(F.data == "tp_main")
-async def tp_main(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
+async def render_tp_main(callback: CallbackQuery):
+    """Рисует главное меню барахолки. Без FSM — можно вызывать из любых хендлеров."""
     user = get_user(callback.from_user.id)
     text = (
         "📢 **Барахолка Камарии**\n\n"
@@ -65,6 +64,11 @@ async def tp_main(callback: CallbackQuery, state: FSMContext):
     ])
     update_user(user['user_id'], state='STATE_TOWN')
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+
+@router.callback_query(F.data == "tp_main")
+async def tp_main(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await render_tp_main(callback)
 
 # --- ПОИСК (ПОКУПКА) ---
 @router.callback_query(F.data == "tp_search")
@@ -136,6 +140,9 @@ async def tp_buy_do(callback: CallbackQuery):
         if not lot: return await callback.answer("Лот больше не доступен!", show_alert=True)
         item_id, item_type, price, seller_id = lot
         
+        if seller_id == buyer_id:
+            return await callback.answer("Нельзя купить собственный лот!", show_alert=True)
+        
         if buyer['gold'] < price: return await callback.answer("Недостаточно золота!", show_alert=True)
             
         # Удаляем лот (блокируем двойную покупку)
@@ -170,7 +177,7 @@ async def tp_buy_do(callback: CallbackQuery):
         pass # Игрок мог заблокировать бота
         
     await callback.answer(f"🎉 Успешно куплено за {price} 🪙!", show_alert=True)
-    await tp_main(callback, FSMContext(storage=None, key=None))
+    await render_tp_main(callback)
 
 # --- ПРОДАЖА (ВЫСТАВЛЕНИЕ) ---
 @router.callback_query(F.data == "tp_sell_cats")
@@ -249,7 +256,7 @@ async def tp_sell_setup(callback: CallbackQuery, state: FSMContext):
 
 @router.message(TPState.waiting_price)
 async def process_tp_price(message: Message, state: FSMContext):
-    if not message.text.isdigit():
+    if not message.text or not message.text.isdigit():
         return await message.answer("⚠️ Пожалуйста, введите число.")
         
     price = int(message.text)
@@ -285,7 +292,8 @@ async def process_tp_price(message: Message, state: FSMContext):
         
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="В Барахолку", callback_data="tp_main")]])
-    await message.answer(f"✅ Лот **{get_item_name(item_id)}** успешно выставлен за **{price} 🪙**!\nСбор площадки: -{fee} 🪙.", reply_markup=kb, parse_mode="Markdown")
+    msg = await message.answer(f"✅ Лот **{get_item_name(item_id)}** успешно выставлен за **{price} 🪙**!\nСбор площадки: -{fee} 🪙.", reply_markup=kb, parse_mode="Markdown")
+    update_user(user_id, last_msg_id=msg.message_id)
 
 # --- МОИ ЛОТЫ И СНЯТИЕ ---
 @router.callback_query(F.data == "tp_my_lots")

@@ -30,12 +30,12 @@ class AntiCheeseMiddleware(BaseMiddleware):
             
         if isinstance(event, CallbackQuery):
             # Пропускаем чит-кнопки админа через проверку "устаревших сообщений"
-            if event.data.startswith("adm_"):
+            if event.data and event.data.startswith("adm_"):
                 return await handler(event, data)
                 
             user = get_user(event.from_user.id)
             if user:
-                if user.get('last_msg_id', 0) != 0 and event.message.message_id != user['last_msg_id']:
+                if user.get('last_msg_id', 0) != 0 and event.message and event.message.message_id != user['last_msg_id']:
                     try:
                         await event.message.delete()
                     except:

@@ -79,7 +79,8 @@ async def handle_combat_victory(callback: CallbackQuery, user_id: int, combat: d
     else:
         location_id = dungeon_data.get('location_id', 'solo')
         
-    is_boss = not dungeon_data.get("nodes", {}).get(dungeon_data.get("current_node"), {}).get("next")
+    current_node_data = (dungeon_data.get("nodes") or {}).get(dungeon_data.get("current_node")) or {}
+    is_boss = current_node_data.get("type") == "boss" or (bool(current_node_data) and not current_node_data.get("next"))
 
     home = fresh_user.get('home_data', {})
     stats = home.setdefault('stats', {})
@@ -181,6 +182,7 @@ async def handle_combat_victory(callback: CallbackQuery, user_id: int, combat: d
         from handlers.dungeon import get_navigation_kb
         if 'coop_host' in combat:
             from handlers.town import get_town_kb
+            update_user(user_id, state='STATE_TOWN', dungeon_data={})
             return await callback.message.edit_text(f"🎉 **Монстр повержен!** Вы помогли хосту.\n{drop_msg}", reply_markup=get_town_kb(fresh_user), parse_mode="Markdown")
         return await callback.message.edit_text(f"🎉 **Победа!**\n{drop_msg}\n\nКуда дальше?", reply_markup=get_navigation_kb(dungeon_data), parse_mode="Markdown")
 
@@ -263,7 +265,8 @@ async def combat_attack(callback: CallbackQuery):
                     apply_death_penalty(user['user_id'], user.get('dungeon_data', {}))
                     update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
                     from handlers.town import get_town_kb
-                    return await callback.message.edit_text("☠️ **Вы убиты!** Все собранные вещи утеряны.", reply_markup=get_town_kb(user), parse_mode="Markdown")
+                    fresh = get_user(user['user_id']) or user
+                    return await callback.message.edit_text("☠️ **Вы убиты!** Все собранные вещи утеряны.", reply_markup=get_town_kb(fresh), parse_mode="Markdown")
 
     if 'coop_host' in combat:
         host = get_user(combat['coop_host'])
@@ -376,7 +379,8 @@ async def combat_end_turn(callback: CallbackQuery):
         apply_death_penalty(user['user_id'], user.get('dungeon_data', {}))
         update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
         from handlers.town import get_town_kb
-        return await callback.message.edit_text("☠ **Вы убиты!** Все собранные вещи утеряны.", reply_markup=get_town_kb(user), parse_mode="Markdown")
+        fresh = get_user(user['user_id']) or user
+        return await callback.message.edit_text("☠ **Вы убиты!** Все собранные вещи утеряны.", reply_markup=get_town_kb(fresh), parse_mode="Markdown")
 
     combat['ap'] = 3
     if 'coop_host' in combat:
@@ -593,7 +597,8 @@ async def execute_drink_combat(callback: CallbackQuery):
         apply_death_penalty(user['user_id'], user.get('dungeon_data', {}))
         update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
         from handlers.town import get_town_kb
-        return await callback.message.edit_text("☠️ **Вы погибли от побочного эффекта зелья!**", reply_markup=get_town_kb(user), parse_mode="Markdown")
+        fresh = get_user(user['user_id']) or user
+        return await callback.message.edit_text("☠️ **Вы погибли от побочного эффекта зелья!**", reply_markup=get_town_kb(fresh), parse_mode="Markdown")
 
     if combat.get('enemy_hp', 50) <= 0: return await handle_combat_victory(callback, user['user_id'], combat)
 

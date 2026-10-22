@@ -1,3 +1,4 @@
+import json
 import random
 import uuid
 
@@ -168,7 +169,12 @@ def generate_dungeon_graph(dungeon_type="solo", mobs_pool=None, boss_id=None, mi
     Принимает опциональный mobs_pool, boss_id и рамки количества комнат для гибкой настройки.
     Веса комнат передаются в виде словаря: {"combat": 30, "puzzle": 15, "treasure": 15, "empty": 10, "sleeping_enemy": 10, "prisoner": 10, "map": 5, "sanctuary": 5}
     """
-    if mobs_pool is None:
+    if isinstance(mobs_pool, str):
+        try:
+            mobs_pool = json.loads(mobs_pool)
+        except Exception:
+            mobs_pool = []
+    if not mobs_pool:
         mobs_pool = ["temple_guard", "living_idol", "khmer_priest", "poison_slime"]
     if boss_id is None:
         boss_id = "temple_guard" if dungeon_type == "solo" else "bone_dragon"

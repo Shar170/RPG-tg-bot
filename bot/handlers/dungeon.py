@@ -161,6 +161,15 @@ async def show_war_fronts(callback: CallbackQuery):
 async def enter_war_region(callback: CallbackQuery):
     reg_id = int(callback.data.split(":")[1])
     user = get_user(callback.from_user.id)
+
+    # Сначала проверяем регион, чтобы не списывать энергию впустую
+    regions = get_all_war_regions()
+    region = next((r for r in regions if r['id'] == reg_id), None)
+    if not region:
+        return await callback.answer("Регион не найден!", show_alert=True)
+    if region.get('is_liberated'):
+        return await callback.answer("Этот регион уже освобождён — бои там завершены!", show_alert=True)
+
     e_cfg = get_energy_settings(user.get('level', 1))
     cost = e_cfg["cost_war"]
 
@@ -169,13 +178,10 @@ async def enter_war_region(callback: CallbackQuery):
 
     log_event(user['user_id'], 'progression', 'dungeon_start_war', -cost, {'region_id': reg_id, 'currency': 'energy'})
 
-    regions = get_all_war_regions()
-    region = next((r for r in regions if r['id'] == reg_id), None)
-
     d_data = generate_dungeon_graph(
         dungeon_type="war", 
-        mobs_pool=region['mobs'], 
-        boss_id=region['boss_id'],
+        mobs_pool=region.get('mobs'), 
+        boss_id=region.get('boss_id'),
         min_rooms=region.get('min_rooms', 4),
         max_rooms=region.get('max_rooms', 6),
         room_weights=region.get('room_weights')
@@ -551,7 +557,8 @@ async def trap_dodge(callback: CallbackQuery):
             apply_death_penalty(user['user_id'], d_data)
             update_user(user['user_id'], state='STATE_TOWN', combat_data={}, dungeon_data={})
             from handlers.town import get_town_kb
-            return await callback.message.edit_text(f"☠️ **Вы не успели увернуться!** Ловушка нанесла смертельный урон. Все собранные вещи утеряны.", reply_markup=get_town_kb(user), parse_mode="Markdown")
+            fresh = get_user(user['user_id']) or user
+            return await callback.message.edit_text(f"☠️ **Вы не успели увернуться!** Ловушка нанесла смертельный урон. Все собранные вещи утеряны.", reply_markup=get_town_kb(fresh), parse_mode="Markdown")
         
         update_user(user['user_id'], hp=user['hp'], dungeon_data=d_data)
         text = f"🩸 **Ай!** Вы отскочили не туда! Ловушка зацепила вас, нанеся **-{dmg} ХП**.\n\nПуть свободен:"
@@ -560,8 +567,18 @@ async def trap_dodge(callback: CallbackQuery):
 @router.callback_query(F.data == "riddle_ans_correct")
 async def riddle_correct(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
-    track_stat(user['user_id'], 'riddles_solved', 1)
     d_data = user.get('dungeon_data', {})
+    node_id = d_data.get("current_node")
+    node = (d_data.get("nodes") or {}).get(node_id)
+    
+    # Защита от многократного нажатия: награда выдаётся один раз на узел
+    if not node or node.get("type") != "puzzle":
+        return await callback.answer("Эта загадка больше не актуальна.", show_alert=True)
+    if node.get("puzzle_solved"):
+        return await callback.answer("Эта загадка уже решена!", show_alert=True)
+        
+    node["puzzle_solved"] = True
+    track_stat(user['user_id'], 'riddles_solved', 1)
     reward = random.randint(35, 75)
     user['gold'] += reward
     d_data.setdefault('gathered_gold', 0)
