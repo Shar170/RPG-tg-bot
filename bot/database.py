@@ -14,6 +14,7 @@ from data.skins import HOME_SKINS
 from data.locations import SOLO_DUNGEONS, WAR_REGIONS, DAILY_DUNGEONS
 from data.mobs import BESTIARY
 from data.recipes import RECIPES
+from data.item_names import item_display_name
 from utils.titles import (
     TITLE_NOVICE, TITLE_SLIME_SLAYER, TITLE_BUTCHER, TITLE_BOSS_HUNTER,
     TITLE_GLADIATOR, TITLE_ARENA_CHAMPION, TITLE_WAR_HERO, TITLE_THINKER,
@@ -1040,10 +1041,17 @@ def get_mob_by_name(name: str):
 def get_all_ingredients():
     with get_connection() as conn: return {row[0]: {"name": row[1], "traits": json.loads(row[2])} for row in conn.cursor().execute("SELECT * FROM alchemy_ingredients").fetchall()}
 
-def get_item(item_id: str):
+def get_item(item_id: str, lang: str | None = None):
     with get_connection() as conn:
         row = conn.cursor().execute("SELECT * FROM items WHERE item_id = ?", (item_id,)).fetchone()
-        if row: return {"item_id": row[0], "name": row[1], "type": row[2], "base_price": row[3], "stats": json.loads(row[4])}
+        if row:
+            return {
+                "item_id": row[0],
+                "name": item_display_name(row[0], row[1], lang=lang),
+                "type": row[2],
+                "base_price": row[3],
+                "stats": json.loads(row[4]),
+            }
     return None
 
 def get_all_recipes():
@@ -1052,19 +1060,19 @@ def get_all_recipes():
 def get_loot_table(location_id: str):
     with get_connection() as conn: return [{"item_id": r[0], "chance": r[1], "min": r[2], "max": r[3]} for r in conn.cursor().execute("SELECT item_id, chance, min_amount, max_amount FROM loot_tables WHERE location_id = ?", (location_id,)).fetchall()]
 
-def get_item_name(item_id: str) -> str:
+def get_item_name(item_id: str, lang: str | None = None) -> str:
     if isinstance(item_id, str) and (
         item_id.startswith("potion_custom:")
         or item_id.lower().startswith("зелье:")
         or item_id.lower().startswith("potion:")
     ):
         from utils.potions import get_potion_display_name
-        return get_potion_display_name(item_id)
+        return get_potion_display_name(item_id, lang=lang)
 
     with get_connection() as conn:
         cursor = conn.cursor()
         res = cursor.execute("SELECT name FROM items WHERE item_id = ?", (item_id,)).fetchone()
-        if res: return res[0]
+        if res: return item_display_name(item_id, res[0], lang=lang)
         res = cursor.execute("SELECT name FROM alchemy_ingredients WHERE item_id = ?", (item_id,)).fetchone()
         if res: return res[0]
         res = cursor.execute("SELECT name, emoji FROM cards WHERE card_id = ?", (item_id,)).fetchone()
