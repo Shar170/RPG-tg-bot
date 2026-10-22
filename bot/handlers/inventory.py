@@ -2,6 +2,7 @@ import json
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from database import get_user, update_user, get_item, get_item_name
+from utils.potions import get_potion_display_name
 
 router = Router()
 
@@ -80,8 +81,7 @@ async def render_category(callback: CallbackQuery, cat: str):
         counts = {p: pots.count(p) for p in set(pots)}
         lines = []
         for p_id, c in counts.items():
-            item_data = get_item(p_id)
-            name = item_data['name'] if item_data else p_id
+            name = get_potion_display_name(p_id)
             lines.append(f"• {name} (x{c})")
             
         text = "🧪 **Ваши зелья и расходники:**\n\n" + "\n".join(lines) if pots else "🧪 У вас нет зелий."

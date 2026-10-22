@@ -14,6 +14,13 @@ from data.skins import HOME_SKINS
 from data.locations import SOLO_DUNGEONS, WAR_REGIONS, DAILY_DUNGEONS
 from data.mobs import BESTIARY
 from data.recipes import RECIPES
+from utils.titles import (
+    TITLE_NOVICE, TITLE_SLIME_SLAYER, TITLE_BUTCHER, TITLE_BOSS_HUNTER,
+    TITLE_GLADIATOR, TITLE_ARENA_CHAMPION, TITLE_WAR_HERO, TITLE_THINKER,
+    TITLE_EMPTY_HEAD, TITLE_FIREFIGHTER, TITLE_GOBLIN_BANE, TITLE_IDOL_BREAKER,
+    TITLE_KEEPER_BURIER, TITLE_POTION_MASTER, TITLE_SMITH, TITLE_LUCKY,
+    ALL_TITLES, make_medal_id, parse_medal_id, get_medal_display as _render_medal,
+)
 
 def get_connection():
     return sqlite3.connect(DB_PATH, timeout=10.0)
@@ -56,6 +63,8 @@ def init_db():
         except sqlite3.OperationalError: pass
         try: cursor.execute("ALTER TABLE users ADD COLUMN reengagement_stage INTEGER DEFAULT 0")
         except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE users ADD COLUMN language TEXT DEFAULT 'ru'")
+        except sqlite3.OperationalError: pass
         
         cursor.execute('''CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY, username TEXT, state TEXT, hp INTEGER, max_hp INTEGER,
@@ -66,6 +75,7 @@ def init_db():
             dust INTEGER DEFAULT 0, pity_counter INTEGER DEFAULT 0, last_hp_time INTEGER DEFAULT 0,
             notified_hp INTEGER DEFAULT 0, notified_energy INTEGER DEFAULT 0,
             last_active_time REAL DEFAULT 0, reengagement_stage INTEGER DEFAULT 0,
+            language TEXT DEFAULT 'ru',
             story_progress TEXT DEFAULT '{"story_id": "", "chapter_id": "", "current_node_id": "", "flags": {}}')''')
         
         # Миграция для старых баз: колонки story_progress в CREATE TABLE раньше не было
@@ -335,7 +345,7 @@ def seed_bots():
             lvl = random.randint(10, 45)
             max_hp = 100 + (lvl * 15)
             clan_id = random.choice(clan_ids)
-            inv = json.dumps({"potions": ["Зелье: Хил", "Зелье: Хил"], "backpack": ["iron_sword", "chainmail"], "materials": {"iron_ingot": 5}})
+            inv = json.dumps({"potions": ["health_potion", "health_potion"], "backpack": ["iron_sword", "chainmail"], "materials": {"iron_ingot": 5}}, ensure_ascii=False)
             stats = json.dumps({"stats": {"pvp_wins": random.randint(5, 50), "bosses_killed": random.randint(10, 100)}})
             
             cursor.execute("""
@@ -691,28 +701,29 @@ def track_stat(user_id: int, stat_name: str, amount: int = 1):
 
 def get_unlocked_titles(home_data: dict) -> list[str]:
     stats = home_data.get('stats', {})
-    titles = ["Новичок"]
+    titles = [TITLE_NOVICE]
     m_k = stats.get('mobs_killed', 0)
     b_k = stats.get('bosses_killed', 0)
 
-    if m_k >= 10: titles.append("Истребитель Слизней")
-    if m_k >= 200: titles.append("Мясник Камарии")
-    if b_k >= 5: titles.append("Охотник на Боссов")
-    if stats.get('pvp_wins', 0) >= 10: titles.append("Гладиатор")
-    if stats.get('pvp_wins', 0) >= 50: titles.append("Чемпион Арены")
-    if stats.get('war_clears', 0) >= 20: titles.append("Герой Камарии")
+    if m_k >= 10: titles.append(TITLE_SLIME_SLAYER)
+    if m_k >= 200: titles.append(TITLE_BUTCHER)
+    if b_k >= 5: titles.append(TITLE_BOSS_HUNTER)
+    if stats.get('pvp_wins', 0) >= 10: titles.append(TITLE_GLADIATOR)
+    if stats.get('pvp_wins', 0) >= 50: titles.append(TITLE_ARENA_CHAMPION)
+    if stats.get('war_clears', 0) >= 20: titles.append(TITLE_WAR_HERO)
     
-    if stats.get('riddles_solved', 0) >= 10: titles.append("Мыслитель")
-    if stats.get('riddles_failed', 0) >= 10: titles.append("Пустоголовый")
-    if stats.get('kills_fire_lord', 0) >= 1: titles.append("Пожарный")
-    if stats.get('kills_goblin_thief', 0) >= 10: titles.append("Гроза гоблинов")
-    if stats.get('kills_living_idol', 0) >= 10: titles.append("Разрушитель идолов")
-    if stats.get('kills_time_keeper', 0) >= 1: titles.append("Похоронитель хранителей")
-    if stats.get('potions_crafted', 0) >= 20: titles.append("Мастер зелий")
-    if stats.get('items_crafted', 0) >= 10: titles.append("Кузнец")
-    if stats.get('minigames_won', 0) >= 5: titles.append("Счастливчик")
+    if stats.get('riddles_solved', 0) >= 10: titles.append(TITLE_THINKER)
+    if stats.get('riddles_failed', 0) >= 10: titles.append(TITLE_EMPTY_HEAD)
+    if stats.get('kills_fire_lord', 0) >= 1: titles.append(TITLE_FIREFIGHTER)
+    if stats.get('kills_goblin_thief', 0) >= 10: titles.append(TITLE_GOBLIN_BANE)
+    if stats.get('kills_living_idol', 0) >= 10: titles.append(TITLE_IDOL_BREAKER)
+    if stats.get('kills_time_keeper', 0) >= 1: titles.append(TITLE_KEEPER_BURIER)
+    if stats.get('potions_crafted', 0) >= 20: titles.append(TITLE_POTION_MASTER)
+    if stats.get('items_crafted', 0) >= 10: titles.append(TITLE_SMITH)
+    if stats.get('minigames_won', 0) >= 5: titles.append(TITLE_LUCKY)
 
-    return sorted(list(set(titles)))
+    unlocked = set(titles)
+    return [title_id for title_id in ALL_TITLES if title_id in unlocked]
 
 def progress_war_region(region_id: int, user_id: int, home_data: dict = None) -> tuple[dict, int]:
     user = get_user(user_id)
@@ -735,20 +746,20 @@ def progress_war_region(region_id: int, user_id: int, home_data: dict = None) ->
             r_name, target, current, is_lib = row
             
             if reg_clears == 10:
-                m_title = f"🥉 Защитник: {r_name}"
+                m_title = make_medal_id("defender", region_id)
                 if m_title not in medals: medals.append(m_title)
             elif reg_clears == 50:
-                m_title = f"🥈 Ветеран: {r_name}"
+                m_title = make_medal_id("veteran", region_id)
                 if m_title not in medals: medals.append(m_title)
             elif reg_clears == 100:
-                m_title = f"🥇 Герой: {r_name}"
+                m_title = make_medal_id("hero", region_id)
                 if m_title not in medals: medals.append(m_title)
 
             new_current = current + 1
             new_lib = 1 if new_current >= target else is_lib
 
             if new_lib == 1 and is_lib == 0:
-                lib_medal = f"🏆 Освободитель: {r_name}"
+                lib_medal = make_medal_id("liberator", region_id)
                 if lib_medal not in medals:
                     medals.append(lib_medal)
                     gems_gained += 25
@@ -759,6 +770,25 @@ def progress_war_region(region_id: int, user_id: int, home_data: dict = None) ->
     home_data['medals'] = medals
     home_data['stats'] = stats
     return home_data, gems_gained
+
+def get_medal_display(medal_id: str, lang: str | None = None) -> str:
+    """Локализованное название медали по её ID."""
+    parsed = parse_medal_id(medal_id)
+    if not parsed:
+        return medal_id
+    _tier, region_id = parsed
+    region_name = f"#{region_id}"
+    with get_connection() as conn:
+        row = conn.execute("SELECT name FROM war_regions WHERE region_id = ?", (region_id,)).fetchone()
+        if row:
+            region_name = row[0]
+    return _render_medal(medal_id, region_name, lang=lang)
+
+def get_user_language(user_id: int) -> str | None:
+    """Лёгкий запрос без построения всего профиля (нужен middleware)."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT language FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        return row[0] if row and row[0] else None
 
 def get_user(user_id: int):
     with get_connection() as conn:
@@ -1023,6 +1053,14 @@ def get_loot_table(location_id: str):
     with get_connection() as conn: return [{"item_id": r[0], "chance": r[1], "min": r[2], "max": r[3]} for r in conn.cursor().execute("SELECT item_id, chance, min_amount, max_amount FROM loot_tables WHERE location_id = ?", (location_id,)).fetchall()]
 
 def get_item_name(item_id: str) -> str:
+    if isinstance(item_id, str) and (
+        item_id.startswith("potion_custom:")
+        or item_id.lower().startswith("зелье:")
+        or item_id.lower().startswith("potion:")
+    ):
+        from utils.potions import get_potion_display_name
+        return get_potion_display_name(item_id)
+
     with get_connection() as conn:
         cursor = conn.cursor()
         res = cursor.execute("SELECT name FROM items WHERE item_id = ?", (item_id,)).fetchone()
@@ -1261,8 +1299,8 @@ def seed_test_story():
         cursor.execute("INSERT OR IGNORE INTO story_choices (node_id, text, req_cond, action_data, next_node_id) VALUES (?, ?, ?, ?, ?)", ('node_start', '💬 Выслушать', '{}', '{}', 'node_listen'))
 
         # Узел 2: Выслушать
-        cursor.execute("INSERT OR REPLACE INTO story_nodes (id, chapter_id, node_type, text, extra_data) VALUES (?, ?, ?, ?, ?)", ('node_listen', 'chap_1', 'text', 'Эльф хрипит: "Я отравлен... У тебя есть Зелье: Хил?".', '{}'))
-        cursor.execute("INSERT OR IGNORE INTO story_choices (node_id, text, req_cond, action_data, next_node_id) VALUES (?, ?, ?, ?, ?)", ('node_listen', '🧪 Отдать зелье', '{"req_item": "Зелье: Хил"}', '{"take_item": "Зелье: Хил", "set_flag": "helped_elf"}', 'node_reward'))
+        cursor.execute("INSERT OR REPLACE INTO story_nodes (id, chapter_id, node_type, text, extra_data) VALUES (?, ?, ?, ?, ?)", ('node_listen', 'chap_1', 'text', 'Эльф хрипит: "Я отравлен... У тебя есть зелье лечения?".', '{}'))
+        cursor.execute("INSERT OR IGNORE INTO story_choices (node_id, text, req_cond, action_data, next_node_id) VALUES (?, ?, ?, ?, ?)", ('node_listen', '🧪 Отдать зелье', '{"req_item": "health_potion"}', '{"take_item": "health_potion", "set_flag": "helped_elf"}', 'node_reward'))
 
         # Узел Боя
         cursor.execute("INSERT OR REPLACE INTO story_nodes (id, chapter_id, node_type, text, extra_data) VALUES (?, ?, ?, ?, ?)", ('node_combat', 'chap_1', 'combat', '', '{"mob_id": "goblin_thief", "win_node": "node_reward", "lose_node": "node_fail"}'))

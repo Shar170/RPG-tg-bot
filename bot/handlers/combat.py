@@ -8,6 +8,7 @@ from database import (
     calculate_damage_received, progress_war_region, track_stat, add_global_event,
     roll_card, log_event  
 )
+from utils.potions import analyze_traits, parse_custom_potion_traits, get_potion_display_name
 
 router = Router()
 
@@ -397,15 +398,13 @@ async def combat_use_potion_menu(callback: CallbackQuery):
     combat = user.get('combat_data', {})
     inv = user['inventory']
     if combat.get('ap', 0) < 1: return await callback.answer("Недостаточно ОД!", show_alert=True)
-    potions = list(set(inv.get("potions", [])))
+    potions = list(dict.fromkeys(inv.get("potions", [])))
     if not potions: return await callback.answer("У вас нет зелий!", show_alert=True)
 
     buttons = []
     for i, p in enumerate(potions):
         count = inv["potions"].count(p)
-        # ИСПРАВЛЕНИЕ: Конвертируем ID в имя для красивых кнопок в бою
-        item_data = get_item(p)
-        name = item_data['name'] if item_data else p
+        name = get_item_name(p)
         buttons.append([InlineKeyboardButton(text=f"Использовать: {name} (x{count})", callback_data=f"c_drink_{i}")])
         
     buttons.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="c_drink_cancel")])
@@ -425,7 +424,7 @@ async def execute_drink_combat(callback: CallbackQuery):
     inv = user['inventory']
     if combat.get('ap', 0) < 1: return await callback.answer("Недостаточно ОД!", show_alert=True)
 
-    unique_potions = list(set(inv.get("potions", [])))
+    unique_potions = list(dict.fromkeys(inv.get("potions", [])))
     idx = int(callback.data.replace("c_drink_", ""))
     if idx >= len(unique_potions): return await callback.answer("Ошибка выбора зелья!", show_alert=True)
 
@@ -491,91 +490,118 @@ async def execute_drink_combat(callback: CallbackQuery):
             log_msg += "⏳ Песочные часы дали +3 ОД на этот ход!\n"
 
     else:
-        # --- FALLBACK ЛОГИКА ДЛЯ КАСТОМНОЙ АЛХИМИИ (Парсинг строки) ---
-        p_lower = used_item.lower()
-        positive_keywords = ["хил", "реген", "рагу", "ускорение", "бодрость", "броня", "сопротивление", "тяжесть", "сила", "уклонение", "ловкость", "полет", "очищение", "мана", "богатство", "удача", "свет", "защита"]
-        is_thrown = not any(pos in p_lower for pos in positive_keywords)
+        # --- КАСТОМНАЯ АЛХИМИЯ: эффекты считаются по ID свойств ---
+        trait_ids = parse_custom_potion_traits(used_item)
+        effects = analyze_traits(trait_ids)
+        is_thrown = effects["is_thrown"]
+        potion_name = get_potion_display_name(used_item)
         
-        log_msg = f"🧪 Вы бросили во врага [{used_item}]:\n" if is_thrown else f"🧪 Вы выпили [{used_item}]:\n"
+        log_msg = f"🧪 Вы бросили во врага [{potion_name}]:\n" if is_thrown else f"🧪 Вы выпили [{potion_name}]:\n"
 
-        if "рагу" in p_lower:
-            heal = int(user['max_hp'] * 0.35)
+        if effects["heal_pct"]:
+            heal = int(user['max_hp'] * effects["heal_pct"])
             user['hp'] = min(user['max_hp'], user['hp'] + heal)
             log_msg += f"💚 +{heal} ХП\n"
-        if "хил" in p_lower or "реген хп" in p_lower:
-            heal = int(user['max_hp'] * 0.25)
-            user['hp'] = min(user['max_hp'], user['hp'] + heal)
-            log_msg += f"💚 +{heal} ХП\n"
-        if "реген од" in p_lower or "ускорение" in p_lower or "бодрость" in p_lower:
-            combat['ap'] += 2
-            log_msg += "⚡ +2 ОД\n"
-        if "броня" in p_lower or "сопротивление" in p_lower or "тяжесть" in p_lower:
-            combat['buff_armor'] = combat.get('buff_armor', 0) + 15; combat['buff_armor_t'] = 3
-            log_msg += "🛡️ Броня увеличена на +15 на 3 хода\n"
-        if "сила" in p_lower and "сила тьмы" not in p_lower:
-            combat['buff_str'] = combat.get('buff_str', 0) + 20; combat['buff_str_t'] = 2
-            log_msg += "⚔️ Сила атаки увеличена на +20 на 2 хода\n"
-        if "уклонение" in p_lower or "ловкость" in p_lower or "полет" in p_lower:
-            combat['buff_dodge'] = 0.35; combat['buff_dodge_t'] = 2
-            log_msg += "💨 Шанс уворота +35% на 2 хода\n"
-        if "очищение" in p_lower or "мана" in p_lower:
-            combat['debuff_blind'] = 0; combat['debuff_fragile'] = 0; combat['debuff_vuln'] = 0
+        if effects["ap_bonus"]:
+            combat['ap'] += effects["ap_bonus"]
+            log_msg += f"⚡ +{effects['ap_bonus']} ОД\n"
+        if effects["armor_bonus"]:
+            combat['buff_armor'] = combat.get('buff_armor', 0) + effects["armor_bonus"]
+            combat['buff_armor_t'] = effects["armor_turns"]
+            log_msg += f"🛡️ Броня увеличена на +{effects['armor_bonus']} на {effects['armor_turns']} хода\n"
+        if effects["str_bonus"]:
+            combat['buff_str'] = combat.get('buff_str', 0) + effects["str_bonus"]
+            combat['buff_str_t'] = effects["str_turns"]
+            log_msg += f"⚔️ Сила атаки увеличена на +{effects['str_bonus']} на {effects['str_turns']} хода\n"
+        if effects["dodge_bonus"]:
+            combat['buff_dodge'] = effects["dodge_bonus"]
+            combat['buff_dodge_t'] = effects["dodge_turns"]
+            log_msg += f"💨 Шанс уворота +{int(effects['dodge_bonus'] * 100)}% на {effects['dodge_turns']} хода\n"
+        if effects["cleanse"]:
+            combat['debuff_blind'] = 0
+            combat['debuff_fragile'] = 0
+            combat['debuff_vuln'] = 0
             log_msg += "✨ Очищение: все негативные эффекты сняты!\n"
 
-        if "урон огнем" in p_lower:
-            dmg, note = calc_element_dmg(30 + user.get('level', 1) * 5, "fire")
-            if dmg > 0: combat['enemy_hp'] -= dmg; combat['dot_burn'] = 3; log_msg += f"🔥 Огненный взрыв: {dmg} урона + поджог на 3 хода!{note}\n"
-            else: log_msg += note
-        if "урон ядом" in p_lower:
-            dmg, note = calc_element_dmg(20 + user.get('level', 1) * 4, "poison")
-            if dmg > 0: combat['enemy_hp'] -= dmg; combat['dot_poison'] = 4; log_msg += f"🟢 Отравление: {dmg} урона + яд на 4 хода!{note}\n"
-            else: log_msg += note
-        if "кровотечение" in p_lower:
-            if "bleed" in immunes: log_msg += f"🚫 У {enemy_name} нет крови! Иммунитет к кровотечению.\n"
-            else: combat['dot_bleed'] = 3; log_msg += "🩸 Наложено кровотечение на 3 хода!\n"
-        if "урон льдом" in p_lower or "замедление" in p_lower:
-            dmg, note = calc_element_dmg(25 + user.get('level', 1) * 4, "ice")
-            if dmg > 0: combat['enemy_hp'] -= dmg; combat['distance'] = "far"; log_msg += f"❄️ Лед нанес {dmg} урона и отбросил врага!{note}\n"
-            else: log_msg += note
-        if "урон током" in p_lower:
-            dmg, note = calc_element_dmg(35 + user.get('level', 1) * 6, "shock")
-            if dmg > 0: combat['enemy_hp'] -= dmg; log_msg += f"⚡ Электрошок: {dmg} урона сквозь броню!{note}\n"
-            else: log_msg += note
-        if "сила тьмы" in p_lower:
-            dmg, note = calc_element_dmg(35 + user.get('level', 1) * 6, "dark")
-            if dmg > 0: combat['enemy_hp'] -= dmg; log_msg += f"🌑 Энергия Бездны: {dmg} урона!{note}\n"
-            else: log_msg += note
-        if "свет" in p_lower or "защита от тьмы" in p_lower:
-            dmg, note = calc_element_dmg(40 + user.get('level', 1) * 5, "light")
-            if dmg > 0: combat['enemy_hp'] -= dmg; combat['debuff_blind'] = 0; log_msg += f"☀️ Священное сияние: {dmg} святого урона!{note}\n"
-            else: log_msg += note
+        element_labels = {
+            "fire": ("🔥", "Огонь"),
+            "poison": ("🟢", "Яд"),
+            "ice": ("❄️", "Лёд"),
+            "shock": ("⚡", "Ток"),
+            "dark": ("🌑", "Тьма"),
+            "light": ("☀️", "Свет"),
+        }
+        for event in effects["damage_events"]:
+            base = event["base"] + user.get('level', 1) * event.get("scale", 0)
+            dmg, note = calc_element_dmg(base, event["element"])
+            icon, label = element_labels.get(event["element"], ("✨", event["element"]))
+            if dmg > 0:
+                combat['enemy_hp'] -= dmg
+                extra = ""
+                if event.get("dot"):
+                    combat[event["dot"]] = event["dot_turns"]
+                    extra = f" + эффект на {event['dot_turns']} хода"
+                if event["element"] == "ice":
+                    extra += " и отбросил врага"
+                log_msg += f"{icon} {label}: {dmg} урона{extra}!{note}\n"
+            else:
+                log_msg += note
 
-        if "вампиризм" in p_lower:
-            if "bleed" in immunes: log_msg += f"🚫 Нельзя выпить жизнь из бескровного существа!\n"
-            else: v_dmg = 20; combat['enemy_hp'] -= v_dmg; user['hp'] = min(user['max_hp'], user['hp'] + v_dmg); log_msg += f"🩸 Иссушение врага на {v_dmg} ХП в вашу пользу!\n"
-        if "оцепенение" in p_lower or "сон" in p_lower or "страх" in p_lower:
-            combat['enemy_stun'] = 1; log_msg += "💫 Враг парализован и пропустит следующий ход!\n"
+        if "bleed" in trait_ids:
+            if "bleed" in immunes:
+                log_msg += f"🚫 У {enemy_name} нет крови! Иммунитет к кровотечению.\n"
+            else:
+                combat['dot_bleed'] = 3
+                log_msg += "🩸 Наложено кровотечение на 3 хода!\n"
 
-        if "богатство" in p_lower or "удача" in p_lower:
-            gold_b = random.randint(30, 80); user['gold'] += gold_b
+        if effects["vampirism"]:
+            if "bleed" in immunes:
+                log_msg += "🚫 Нельзя выпить жизнь из бескровного существа!\n"
+            else:
+                v_dmg = effects["vampirism"]
+                combat['enemy_hp'] -= v_dmg
+                user['hp'] = min(user['max_hp'], user['hp'] + v_dmg)
+                log_msg += f"🩸 Иссушение врага на {v_dmg} ХП в вашу пользу!\n"
+
+        if effects["enemy_stun"]:
+            combat['enemy_stun'] = 1
+            log_msg += "💫 Враг парализован и пропустит следующий ход!\n"
+
+        if effects["gold_range"]:
+            gold_b = random.randint(*effects["gold_range"])
+            user['gold'] += gold_b
             dungeon_data = user.get('dungeon_data', {})
             dungeon_data.setdefault('gathered_gold', 0)
             dungeon_data['gathered_gold'] += gold_b
-            update_user(user['user_id'], dungeon_data=dungeon_data)
+            update_user(user['user_id'], gold=user['gold'], dungeon_data=dungeon_data)
             log_msg += f"💰 Превращение в золото: +{gold_b} 🪙!\n"
 
-        if "слабость" in p_lower or "ожог" in p_lower or "болезнь" in p_lower or "удушье" in p_lower:
-            if is_thrown: combat['enemy_hp'] -= 15; log_msg += "💥 Колба разбилась, нанеся врагу 15 урона от ядовитых паров!\n"
-            else: user['hp'] -= 15; log_msg += "🤢 Побочный эффект: ожог пищевода (-15 ХП)!\n"
-        if "хрупкость" in p_lower:
-            if is_thrown: combat['enemy_vuln'] = 3; log_msg += "🎯 Броня врага разъедена! (Получает +25% урона на 3 хода)\n"
-            else: combat['debuff_fragile'] = 3; log_msg += "💔 Побочный эффект: ваша броня ослаблена на 50% на 3 хода!\n"
-        if "слепота" in p_lower:
-            if is_thrown: combat['enemy_blind'] = 2; log_msg += "👁️ Враг ослеплен на 2 хода!\n"
-            else: combat['debuff_blind'] = 2; log_msg += "👁️ Побочный эффект: ослепление на 2 хода!\n"
-        if "уязвимость" in p_lower:
-            if is_thrown: combat['enemy_vuln'] = 3; log_msg += "🎯 Враг стал уязвим! (Получает +25% урона на 3 хода)\n"
-            else: combat['debuff_vuln'] = 3; log_msg += "🎯 Побочный эффект: входящий урон увеличен на 25% на 3 хода!\n"
+        if effects["enemy_flat_damage"]:
+            combat['enemy_hp'] -= effects["enemy_flat_damage"]
+            log_msg += f"💥 Колба разбилась, нанеся врагу {effects['enemy_flat_damage']} урона от ядовитых паров!\n"
+        if effects["self_damage"]:
+            user['hp'] -= effects["self_damage"]
+            log_msg += f"🤢 Побочный эффект: ожог пищевода (-{effects['self_damage']} ХП)!\n"
+
+        enemy_debuff_logs = {
+            "debuff_vuln": "🎯 Враг стал уязвим! (Получает +25% урона на 3 хода)\n",
+            "debuff_blind": "👁️ Враг ослеплен на 2 хода!\n",
+        }
+        for key, turns in effects["enemy_debuffs"].items():
+            combat[key] = turns
+            log_msg += enemy_debuff_logs.get(key, "🎯 Враг ослаблен!\n")
+
+        self_debuff_logs = {
+            "debuff_fragile": "💔 Побочный эффект: ваша броня ослаблена на 50% на 3 хода!\n",
+            "debuff_blind": "👁️ Побочный эффект: ослепление на 2 хода!\n",
+            "debuff_vuln": "🎯 Побочный эффект: входящий урон увеличен на 25% на 3 хода!\n",
+        }
+        for key, turns in effects["self_debuffs"].items():
+            combat[key] = turns
+            log_msg += self_debuff_logs.get(key, "🎯 Побочный эффект!\n")
+
+        if effects["distance"]:
+            combat["distance"] = effects["distance"]
 
     # --- ЗАВЕРШЕНИЕ ЭФФЕКТОВ ---
     if 'coop_host' in combat:
@@ -600,9 +626,12 @@ async def execute_drink_combat(callback: CallbackQuery):
         fresh = get_user(user['user_id']) or user
         return await callback.message.edit_text("☠️ **Вы погибли от побочного эффекта зелья!**", reply_markup=get_town_kb(fresh), parse_mode="Markdown")
 
+    # Фиксируем расход зелья и изменения ХП до проверки победы:
+    # handle_combat_victory перечитывает игрока из БД.
+    update_user(user['user_id'], hp=user['hp'], inventory=inv, combat_data=combat)
+
     if combat.get('enemy_hp', 50) <= 0: return await handle_combat_victory(callback, user['user_id'], combat)
 
-    update_user(user['user_id'], hp=user['hp'], inventory=inv, combat_data=combat)
     await render_combat(callback, user, combat, log_msg)
 
 @router.callback_query(F.data == "combat_act_flee")

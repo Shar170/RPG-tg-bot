@@ -9,8 +9,10 @@ from database import (
     get_clan_by_name, get_all_clans_ranked, get_clan_members,
     get_connection, get_clan_creation_requirements, get_item_name,
     get_clan_merchant_deals, get_item_price, get_item, get_all_home_skins,
-    log_event  # <--- Добавлен импорт логгера
+    get_medal_display, log_event  # <--- Добавлен импорт логгера
 )
+from i18n import t
+from utils.titles import TITLE_NOVICE, get_title_display
 
 router = Router()
 
@@ -283,8 +285,9 @@ async def clan_view_home(callback: CallbackQuery):
     if not skin_desc or skin_desc.startswith("Убить") or skin_desc.startswith("Титул"):
         skin_desc = "Здесь царит спокойствие и уют."
         
-    active_title = home_data.get('active_title', 'Новичок')
-    active_medal = home_data.get('active_medal', 'Нет медалей')
+    active_title = get_title_display(home_data.get('active_title') or TITLE_NOVICE)
+    active_medal_id = home_data.get('active_medal')
+    active_medal = get_medal_display(active_medal_id) if active_medal_id else t("home.no_medal")
     
     text = (
         f"🏘 **Дом игрока {target_user['username']}**\n"
@@ -441,7 +444,7 @@ async def clan_merchant_buy(callback: CallbackQuery):
     if item and item['type'] in ["weapon", "armor"]:
         inv.setdefault("backpack", []).append(i_id)
     elif item and item['type'] == "consumable":
-        inv.setdefault("potions", []).append(item['name'])
+        inv.setdefault("potions", []).append(i_id)
     else:
         inv.setdefault("materials", {})[i_id] = inv.get("materials", {}).get(i_id, 0) + 1
         
@@ -470,10 +473,15 @@ async def clan_merchant_sell(callback: CallbackQuery):
         if inv["materials"][i_id] <= 0: del inv["materials"][i_id]
         has_item = True
     else:
-        item_name = get_item_name(i_id)
-        if item_name in inv.get("potions", []):
-            inv["potions"].remove(item_name)
+        if i_id in inv.get("potions", []):
+            inv["potions"].remove(i_id)
             has_item = True
+        else:
+            # Совместимость со старыми данными, где в potions лежало название.
+            item_name = get_item_name(i_id)
+            if item_name in inv.get("potions", []):
+                inv["potions"].remove(item_name)
+                has_item = True
 
     if not has_item:
         return await callback.answer("У вас нет этого предмета для продажи!", show_alert=True)

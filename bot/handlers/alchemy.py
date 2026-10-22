@@ -1,17 +1,26 @@
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 import hashlib
-from database import get_user, update_user, get_all_ingredients, get_item_name, track_stat, add_quest_progress
+from database import get_user, update_user, get_all_ingredients, track_stat, add_quest_progress
+from data.traits import normalize_traits
+from utils.potions import (
+    make_custom_potion_id, custom_potion_display_name, trait_display,
+)
 
 router = Router()
 
-def _trait_group_key(title: str) -> str:
+def _trait_group_key(trait_key: str) -> str:
     """Короткий ASCII-ключ для callback_data.
 
-    Названия свойств на кириллице не влезают в лимит Telegram (64 байта),
-    поэтому в кнопку кладём хэш, а полное название восстанавливаем на месте.
+    Набор ID свойств может быть длинным, поэтому в кнопку кладём хэш,
+    а сам набор восстанавливаем из инвентаря на месте.
     """
-    return hashlib.md5(title.encode("utf-8")).hexdigest()[:12]
+    return hashlib.md5(trait_key.encode("utf-8")).hexdigest()[:12]
+
+def _known_traits(user: dict) -> dict:
+    """Приводит известные свойства к ID (в т.ч. старые русские значения)."""
+    raw = user.get("known_traits", {})
+    return {ing_id: normalize_traits(values) for ing_id, values in raw.items()}
 
 # --- ГЛАВНОЕ МЕНЮ АЛХИМИИ ---
 @router.callback_query(F.data == "town_alchemy")
@@ -36,7 +45,7 @@ async def open_alchemy_hub(callback: CallbackQuery):
 @router.callback_query(F.data == "alch_mode_explore")
 async def explore_pick_first(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
-    known = user.get("known_traits", {})
+    known = _known_traits(user)
     all_ing = get_all_ingredients()
     materials = user['inventory'].get("materials", {})
     
@@ -48,7 +57,10 @@ async def explore_pick_first(callback: CallbackQuery):
             has_ingredients = True
             data = all_ing[ing_id]
             # Показываем открытые свойства или вопросики
-            traits_str = ", ".join([t if t in known.get(ing_id, []) else "???" for t in data["traits"]])
+            traits_str = ", ".join([
+                trait_display(trait_id) if trait_id in known.get(ing_id, []) else "???"
+                for trait_id in data["traits"]
+            ])
             text += f"• **{data['name']}** (x{count})\n  └ [{traits_str}]\n"
             buttons.append([InlineKeyboardButton(text=f"Слот 1: {data['name']}", callback_data=f"alch_exp1:{ing_id}")])
             
@@ -111,30 +123,32 @@ async def explore_execute_mix(callback: CallbackQuery):
     all_ing = get_all_ingredients()
     common_traits = list(set(all_ing[ing1]["traits"]).intersection(set(all_ing[ing2]["traits"])))
     
-    known = user.get("known_traits", {})
+    known = _known_traits(user)
     known.setdefault(ing1, [])
     known.setdefault(ing2, [])
     
     new_discovered = []
     if common_traits:
-        for trait in common_traits:
-            if trait not in known[ing1]:
-                known[ing1].append(trait)
-                new_discovered.append(trait)
-            if trait not in known[ing2]:
-                known[ing2].append(trait)
-                if trait not in new_discovered:
-                    new_discovered.append(trait)
+        common_traits.sort()
+        for trait_id in common_traits:
+            if trait_id not in known[ing1]:
+                known[ing1].append(trait_id)
+                new_discovered.append(trait_id)
+            if trait_id not in known[ing2]:
+                known[ing2].append(trait_id)
+                if trait_id not in new_discovered:
+                    new_discovered.append(trait_id)
             
-        trait_str = ", ".join(common_traits)
-        potion_name = f"Зелье: {trait_str}"
-        inv.setdefault("potions", []).append(potion_name)
+        potion_id = make_custom_potion_id(common_traits)
+        potion_name = custom_potion_display_name(common_traits)
+        inv.setdefault("potions", []).append(potion_id)
         
         track_stat(user['user_id'], 'potions_crafted', 1)
         # ЛОГ: Прогресс дейлика на зелья
         add_quest_progress(user['user_id'], "craft_potion", 1)
         
-        disc_text = f"\n💡 **Открыты свойства:** {', '.join(new_discovered)}!" if new_discovered else "\n(Эти свойства вам уже были известны)"
+        discovered_names = ", ".join(trait_display(trait_id) for trait_id in new_discovered)
+        disc_text = f"\n💡 **Открыты свойства:** {discovered_names}!" if new_discovered else "\n(Эти свойства вам уже были известны)"
         result_msg = f"✨ **Эксперимент успешен!**\nСоздано: **[{potion_name}]**{disc_text}"
     else:
         result_msg = "💀 **Неудача.** Общих свойств не обнаружено, смесь испарилась едким дымом."
@@ -155,12 +169,12 @@ async def explore_execute_mix(callback: CallbackQuery):
 @router.callback_query(F.data == "alch_mode_produce")
 async def produce_catalog(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
-    known = user.get("known_traits", {})
+    known = _known_traits(user)
     all_ing = get_all_ingredients()
     materials = user['inventory'].get("materials", {})
     
     user_mats = [m for m in materials.keys() if materials.get(m, 0) > 0 and m in all_ing]
-    grouped_recipes = {} # Группируем рецепты по итоговому эффекту зелья
+    grouped_recipes = {} # trait_key -> доступное количество
     
     for i in range(len(user_mats)):
         for j in range(i + 1, len(user_mats)):
@@ -168,14 +182,13 @@ async def produce_catalog(callback: CallbackQuery):
             shared_known = list(set(known.get(m1, [])).intersection(set(known.get(m2, []))))
             
             if shared_known:
-                # Обязательно сортируем, чтобы "Хилл, Мана" и "Мана, Хилл" попали в одну группу
-                shared_known.sort() 
-                traits_title = ", ".join(shared_known)
+                shared_known.sort()
+                trait_key = "+".join(shared_known)
                 max_craft = min(materials[m1], materials[m2])
                 
-                if traits_title not in grouped_recipes:
-                    grouped_recipes[traits_title] = 0
-                grouped_recipes[traits_title] += max_craft
+                if trait_key not in grouped_recipes:
+                    grouped_recipes[trait_key] = 0
+                grouped_recipes[trait_key] += max_craft
                     
     if not grouped_recipes:
         text = (
@@ -194,8 +207,9 @@ async def produce_catalog(callback: CallbackQuery):
     text = "⚗️ **Производство: Выберите зелье для крафта**\nСформировано на основе ваших знаний и запасов:\n\n"
     buttons = []
     
-    for traits_title, total_craft in list(grouped_recipes.items())[:15]: 
-        group_key = _trait_group_key(traits_title)
+    for trait_key, total_craft in list(grouped_recipes.items())[:15]:
+        group_key = _trait_group_key(trait_key)
+        traits_title = ", ".join(trait_display(trait_id) for trait_id in trait_key.split("+"))
         btn_text = f"🧪 {traits_title} [доступно: {total_craft} шт]"
         buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"alch_grp:{group_key}")])
         
@@ -208,13 +222,13 @@ async def produce_catalog(callback: CallbackQuery):
 async def produce_group_select(callback: CallbackQuery):
     group_key = callback.data.split(":", 1)[1]
     user = get_user(callback.from_user.id)
-    known = user.get("known_traits", {})
+    known = _known_traits(user)
     all_ing = get_all_ingredients()
     materials = user['inventory'].get("materials", {})
 
     user_mats = [m for m in materials.keys() if materials.get(m, 0) > 0 and m in all_ing]
     buttons = []
-    matched_title = None
+    matched_key = None
     
     for i in range(len(user_mats)):
         for j in range(i + 1, len(user_mats)):
@@ -223,20 +237,20 @@ async def produce_group_select(callback: CallbackQuery):
             
             if shared_known:
                 shared_known.sort()
-                traits_title = ", ".join(shared_known)
+                trait_key = "+".join(shared_known)
                 
-                # Если сгенерированный эффект совпадает с выбранным из прошлого меню
-                if _trait_group_key(traits_title) == group_key:
-                    matched_title = traits_title
+                if _trait_group_key(trait_key) == group_key:
+                    matched_key = trait_key
                     max_craft = min(materials[m1], materials[m2])
                     name1 = all_ing[m1]['name']
                     name2 = all_ing[m2]['name']
                     btn_text = f"🌿 {name1} + {name2} [до {max_craft} шт]"
                     buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"alch_prod_sel:{m1}:{m2}")])
 
-    if not matched_title:
+    if not matched_key:
         return await callback.answer("Эти рецепты больше недоступны (ингредиенты закончились).", show_alert=True)
 
+    matched_title = ", ".join(trait_display(trait_id) for trait_id in matched_key.split("+"))
     text = f"⚗️ **Рецепты для зелья:** [{matched_title}]\n\nВыберите комбинацию ингредиентов:"
     buttons.append([InlineKeyboardButton(text="🔙 К списку зелий", callback_data="alch_mode_produce")])
     
@@ -258,10 +272,11 @@ async def produce_batch_select(callback: CallbackQuery):
     if max_possible < 1:
         return await callback.answer("Ингредиенты закончились!", show_alert=True)
         
-    known = user.get("known_traits", {})
+    known = _known_traits(user)
     shared_traits = list(set(known.get(ing1, [])).intersection(set(known.get(ing2, []))))
-    shared_traits.sort() # Поддерживаем сортировку
-    traits_str = ", ".join(shared_traits)
+    shared_traits.sort()
+    trait_key = "+".join(shared_traits)
+    traits_str = ", ".join(trait_display(trait_id) for trait_id in shared_traits)
     
     name1 = all_ing[ing1]['name']
     name2 = all_ing[ing2]['name']
@@ -283,7 +298,7 @@ async def produce_batch_select(callback: CallbackQuery):
     buttons.append(row)
     
     # Кнопка возврата теперь ведет не в корень, а в подменю конкретного зелья
-    group_key = _trait_group_key(traits_str)
+    group_key = _trait_group_key(trait_key)
     buttons.append([InlineKeyboardButton(text="🔙 Назад к рецептам", callback_data=f"alch_grp:{group_key}")])
     
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
@@ -312,13 +327,14 @@ async def produce_batch_execute(callback: CallbackQuery):
     if ing2 in materials and materials[ing2] == 0: del materials[ing2]
     
     # Определение свойств (берем все фактические общие свойства для зелья)
-    common_traits = list(set(all_ing[ing1]["traits"]).intersection(set(all_ing[ing2]["traits"])))
-    potion_name = f"Зелье: {', '.join(common_traits)}"
+    common_traits = sorted(set(all_ing[ing1]["traits"]).intersection(set(all_ing[ing2]["traits"])))
+    potion_id = make_custom_potion_id(common_traits)
+    potion_name = custom_potion_display_name(common_traits)
     
     # Добавление пачки зелий
     potions = inv.setdefault("potions", [])
     for _ in range(craft_qty):
-        potions.append(potion_name)
+        potions.append(potion_id)
         
     track_stat(user['user_id'], 'potions_crafted', craft_qty)
     # ЛОГ: Прогресс дейлика на зелья

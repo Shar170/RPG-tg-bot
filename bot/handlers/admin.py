@@ -96,8 +96,8 @@ async def admin_callbacks(callback: CallbackQuery):
         give_item(user['user_id'], "titan_fortress", "armor", 1)
         give_item(user['user_id'], "epic_token", "material", 20)
         inv = user.get('inventory', {})
-        inv.setdefault("potions", []).extend(["Сытное рагу"] * 10)
-        inv.setdefault("potions", []).extend(["Зелье: Хил"] * 10)
+        inv.setdefault("potions", []).extend(["ragout"] * 10)
+        inv.setdefault("potions", []).extend(["health_potion"] * 10)
         update_user(user['user_id'], inventory=inv)
         await callback.answer("📦 Выдана топ-экипировка, 20 эпик токенов и 20 зелий!")
         

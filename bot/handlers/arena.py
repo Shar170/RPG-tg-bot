@@ -5,12 +5,19 @@ import asyncio
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from database import (
-    get_user, update_user, get_connection, get_pvp_match, update_pvp_match, 
-    remove_from_queue, delete_pvp_match, track_stat, add_global_event, get_item, get_setting, 
+    get_user, update_user, get_connection, get_pvp_match, update_pvp_match,
+    remove_from_queue, delete_pvp_match, track_stat, add_global_event, get_item, get_item_name, get_setting,
     calculate_damage_received, consume_energy
 )
+from utils.potions import analyze_traits, parse_custom_potion_traits, get_potion_display_name
 
 router = Router()
+
+def _potion_heal_pct(potion_id: str) -> float:
+    item = get_item(potion_id)
+    if item and item.get('type') == 'consumable':
+        return item.get('stats', {}).get('heal_pct', 0) or 0
+    return analyze_traits(parse_custom_potion_traits(potion_id))["heal_pct"]
 
 @router.callback_query(F.data == "town_arena")
 async def arena_menu(callback: CallbackQuery):
@@ -93,8 +100,14 @@ async def arena_join(callback: CallbackQuery):
     if match_found:
         opp = get_user(opp_id)
         if opp.get('is_bot', 0) == 1:
-            bot_potions = ["Зелье: Хил", "Зелье: Хил"]
-            attack_pool = ["Зелье: Урон огнем", "Зелье: Урон ядом", "Зелье: Урон льдом", "Зелье: Слепота", "Зелье: Хрупкость"]
+            bot_potions = ["health_potion", "health_potion"]
+            attack_pool = [
+                "potion_custom:fire_damage",
+                "potion_custom:poison_damage",
+                "potion_custom:ice_damage",
+                "potion_custom:blind",
+                "potion_custom:fragility",
+            ]
             bot_potions.extend(random.sample(attack_pool, k=random.randint(1, 2)))
             
             opp_inv = opp.get('inventory', {})
@@ -302,34 +315,53 @@ async def process_bot_turn(bot, match_id: int):
     
     # Использование зелья (Хил)
     if match[my_hp] < (match[my_max] * 0.4) and match[ap_key] >= 1:
-        heal_potions = [p for p in bot_potions if "Хил" in p or "Реген" in p or "Рагу" in p]
+        heal_potions = [p for p in bot_potions if _potion_heal_pct(p) > 0]
         if heal_potions:
             heal_p = heal_potions[0]
             bot_potions.remove(heal_p)
-            match[my_hp] += int(match[my_max] * 0.25)
+            heal_pct = _potion_heal_pct(heal_p)
+            match[my_hp] += int(match[my_max] * heal_pct)
             if match[my_hp] > match[my_max]: match[my_hp] = match[my_max]
             match[ap_key] -= 1
-            log += f"🧪 {bot_user['username']} выпил [{heal_p}]!\n"
+            log += f"🧪 {bot_user['username']} выпил [{get_item_name(heal_p)}]!\n"
             update_user(bot_user['user_id'], inventory=inv)
             used_potion = True
 
     # Использование зелья (Урон/Дебафф), если не хилился
     if not used_potion and match[ap_key] >= 1 and random.random() < 0.4:
-        att_potions = [p for p in bot_potions if "Урон" in p or "Слепота" in p or "Хрупкость" in p]
+        att_potions = [p for p in bot_potions if _potion_heal_pct(p) <= 0]
         if att_potions:
             att_p = att_potions[0]
             bot_potions.remove(att_p)
             match[ap_key] -= 1
             
-            p_lower = att_p.lower()
-            dmg_to_opp = 0
-            log += f"🧪 {bot_user['username']} бросил [{att_p}]!\n"
+            effects = analyze_traits(parse_custom_potion_traits(att_p))
+            dmg_to_opp = sum(event["base"] for event in effects["damage_events"])
+            log += f"🧪 {bot_user['username']} бросил [{get_item_name(att_p)}]!\n"
             
-            if "урон огнем" in p_lower: dmg_to_opp += 30; opp_buffs['dot_burn'] = opp_buffs.get('dot_burn', 0) + 3
-            if "урон ядом" in p_lower: dmg_to_opp += 20; opp_buffs['dot_poison'] = opp_buffs.get('dot_poison', 0) + 4
-            if "урон льдом" in p_lower: dmg_to_opp += 25; state['distance'] = "far"
-            if "хрупкость" in p_lower: opp_buffs['debuff_vuln'] = opp_buffs.get('debuff_vuln', 0) + 3
-            if "слепота" in p_lower: opp_buffs['debuff_blind'] = opp_buffs.get('debuff_blind', 0) + 2
+            for event in effects["damage_events"]:
+                if event.get("dot"):
+                    opp_buffs[event["dot"]] = opp_buffs.get(event["dot"], 0) + event["dot_turns"]
+            if "bleed" in effects["trait_ids"]:
+                opp_buffs['dot_bleed'] = opp_buffs.get('dot_bleed', 0) + 3
+            if effects["vampirism"]:
+                dmg_to_opp += effects["vampirism"]
+                match[my_hp] = min(match[my_max], match[my_hp] + effects["vampirism"])
+            if effects["enemy_stun"]:
+                opp_buffs['stun'] = 1
+            if effects["distance"]:
+                state['distance'] = effects["distance"]
+            for key, turns in effects["enemy_debuffs"].items():
+                opp_buffs[key] = opp_buffs.get(key, 0) + turns
+
+            # Обычные бомбы/свитки из БД
+            item_data = get_item(att_p)
+            if item_data and item_data.get('type') == 'consumable':
+                effect = item_data.get('stats', {}).get('effect')
+                if effect == 'bleed':
+                    opp_buffs['dot_bleed'] = opp_buffs.get('dot_bleed', 0) + 3
+                elif effect == 'vuln':
+                    opp_buffs['debuff_vuln'] = opp_buffs.get('debuff_vuln', 0) + 3
             
             if is_p1: match['p2_hp'] -= dmg_to_opp
             else: match['p1_hp'] -= dmg_to_opp
@@ -536,13 +568,12 @@ async def pvp_potion_menu(callback: CallbackQuery):
         return await callback.answer("Недостаточно ОД!", show_alert=True)
         
     inv = user['inventory']
-    potions = list(set(inv.get("potions", [])))
+    potions = list(dict.fromkeys(inv.get("potions", [])))
     if not potions: return await callback.answer("У вас нет зелий!", show_alert=True)
 
     buttons = []
     for i, p in enumerate(potions):
-        item_data = get_item(p)
-        p_name = item_data['name'] if item_data else p
+        p_name = get_item_name(p)
         buttons.append([InlineKeyboardButton(text=f"Выпить: {p_name} (x{inv['potions'].count(p)})", callback_data=f"pvp_drink_{i}")])
     buttons.append([InlineKeyboardButton(text="🔙 Отмена", callback_data="pvp_drink_cancel")])
     await callback.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -578,7 +609,7 @@ async def execute_drink_pvp(callback: CallbackQuery):
     
     inv = user['inventory']
     idx = int(callback.data.replace("pvp_drink_", ""))
-    unique_potions = list(set(inv.get("potions", [])))
+    unique_potions = list(dict.fromkeys(inv.get("potions", [])))
     
     if idx >= len(unique_potions): return await callback.answer("Ошибка зелья!")
     used_item = unique_potions[idx]
@@ -593,6 +624,7 @@ async def execute_drink_pvp(callback: CallbackQuery):
     
     dmg_to_opp = 0
     heal_to_me = 0
+    self_damage = 0
     ap_gain = -1 
     
     item_data = get_item(used_item)
@@ -619,39 +651,64 @@ async def execute_drink_pvp(callback: CallbackQuery):
         elif effect == "ap_boost":
             ap_gain += 3
     else:
-        # Кастомные зелья алхимии: в инвентаре лежит русское название
-        p_lower = used_item.lower()
-        positive = ["хил", "реген", "рагу", "броня", "сила", "уклонение", "очищение", "защита"]
-        is_thrown = not any(pos in p_lower for pos in positive)
-        log = f"🧪 {user['username']} бросил [{used_item}]!" if is_thrown else f"🧪 {user['username']} выпил [{used_item}]!"
+        # Кастомные зелья алхимии: эффекты считаются по ID свойств
+        trait_ids = parse_custom_potion_traits(used_item)
+        effects = analyze_traits(trait_ids)
+        is_thrown = effects["is_thrown"]
+        name = get_potion_display_name(used_item)
+        log = f"🧪 {user['username']} бросил [{name}]!" if is_thrown else f"🧪 {user['username']} выпил [{name}]!"
         
-        if "хил" in p_lower or "реген хп" in p_lower or "рагу" in p_lower: heal_to_me += int(user['max_hp'] * 0.25)
-        if "броня" in p_lower: my_buffs['buff_armor'] = my_buffs.get('buff_armor', 0) + 15; my_buffs['buff_armor_t'] = 3
-        if "сила" in p_lower and "тьмы" not in p_lower: my_buffs['buff_str'] = my_buffs.get('buff_str', 0) + 20; my_buffs['buff_str_t'] = 2
-        if "уклонение" in p_lower: my_buffs['buff_dodge'] = 1; my_buffs['buff_dodge_t'] = 2
-        if "очищение" in p_lower: 
-            my_buffs['debuff_blind'] = 0; my_buffs['debuff_fragile'] = 0; my_buffs['debuff_vuln'] = 0; my_buffs['dot_burn'] = 0; my_buffs['dot_poison'] = 0; my_buffs['dot_bleed'] = 0
-            
-        if "урон огнем" in p_lower: dmg_to_opp += 30; opp_buffs['dot_burn'] = 3
-        if "урон ядом" in p_lower: dmg_to_opp += 20; opp_buffs['dot_poison'] = 4
-        if "кровотечение" in p_lower: opp_buffs['dot_bleed'] = 3
-        if "урон льдом" in p_lower: dmg_to_opp += 25; state['distance'] = "far"
-        if "оцепенение" in p_lower or "сон" in p_lower: opp_buffs['stun'] = 1
-        
-        if "хрупкость" in p_lower:
-            if is_thrown: opp_buffs['debuff_vuln'] = 3
-            else: my_buffs['debuff_fragile'] = 3
-        if "слепота" in p_lower:
-            if is_thrown: opp_buffs['debuff_blind'] = 2
-            else: my_buffs['debuff_blind'] = 2
-        
+        if effects["heal_pct"]:
+            heal_to_me += int(user['max_hp'] * effects["heal_pct"])
+        if effects["ap_bonus"]:
+            ap_gain += effects["ap_bonus"]
+        if effects["armor_bonus"]:
+            my_buffs['buff_armor'] = my_buffs.get('buff_armor', 0) + effects["armor_bonus"]
+            my_buffs['buff_armor_t'] = effects["armor_turns"]
+        if effects["str_bonus"]:
+            my_buffs['buff_str'] = my_buffs.get('buff_str', 0) + effects["str_bonus"]
+            my_buffs['buff_str_t'] = effects["str_turns"]
+        if effects["dodge_bonus"]:
+            my_buffs['buff_dodge'] = 1
+            my_buffs['buff_dodge_t'] = effects["dodge_turns"]
+        if effects["cleanse"]:
+            my_buffs['debuff_blind'] = 0
+            my_buffs['debuff_fragile'] = 0
+            my_buffs['debuff_vuln'] = 0
+            my_buffs['dot_burn'] = 0
+            my_buffs['dot_poison'] = 0
+            my_buffs['dot_bleed'] = 0
+
+        for event in effects["damage_events"]:
+            dmg_to_opp += event["base"]
+            if event.get("dot"):
+                opp_buffs[event["dot"]] = event["dot_turns"]
+        if "bleed" in trait_ids:
+            opp_buffs['dot_bleed'] = 3
+        if effects["vampirism"]:
+            dmg_to_opp += effects["vampirism"]
+            heal_to_me += effects["vampirism"]
+        if effects["enemy_stun"]:
+            opp_buffs['stun'] = 1
+        if effects["enemy_flat_damage"]:
+            dmg_to_opp += effects["enemy_flat_damage"]
+        if effects["self_damage"]:
+            self_damage += effects["self_damage"]
+        if effects["distance"]:
+            state['distance'] = effects["distance"]
+
+        for key, turns in effects["enemy_debuffs"].items():
+            opp_buffs[key] = turns
+        for key, turns in effects["self_debuffs"].items():
+            my_buffs[key] = turns
+
     if is_p1:
-        match['p1_hp'] = min(match['p1_max'], match['p1_hp'] + heal_to_me)
+        match['p1_hp'] = min(match['p1_max'], match['p1_hp'] + heal_to_me - self_damage)
         match['p2_hp'] -= dmg_to_opp
         match['p1_ap'] += ap_gain
         update_pvp_match(match_id, p1_hp=match['p1_hp'], p2_hp=match['p2_hp'], p1_ap=match['p1_ap'], match_state=json.dumps(state), log=log, last_action_time=time.time())
     else:
-        match['p2_hp'] = min(match['p2_max'], match['p2_hp'] + heal_to_me)
+        match['p2_hp'] = min(match['p2_max'], match['p2_hp'] + heal_to_me - self_damage)
         match['p1_hp'] -= dmg_to_opp
         match['p2_ap'] += ap_gain
         update_pvp_match(match_id, p1_hp=match['p1_hp'], p2_hp=match['p2_hp'], p2_ap=match['p2_ap'], match_state=json.dumps(state), log=log, last_action_time=time.time())

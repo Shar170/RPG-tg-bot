@@ -3,10 +3,13 @@ from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from database import (
     get_connection, get_user, update_user, get_story_node, get_item,
-    get_story_choices, get_available_stories, get_unlocked_titles, get_clan, get_item_name
+    get_story_choices, get_available_stories, get_unlocked_titles, get_clan, get_item_name,
+    get_medal_display
 )
 from handlers.town import get_town_kb
 from handlers.combat import render_combat
+from i18n import t
+from utils.titles import TITLE_NOVICE, get_title_display, normalize_title
 
 router = Router()
 
@@ -114,8 +117,10 @@ async def render_story_node(callback: CallbackQuery, user: dict, node_id: str):
     update_user(user['user_id'], story_progress=progress, state='STATE_STORY')
     
     home_data = user.get('home_data', {})
-    active_title = home_data.get('active_title', 'Новичок')
-    active_medal = home_data.get('active_medal', 'Нет медалей')
+    active_title_id = home_data.get('active_title') or TITLE_NOVICE
+    active_medal_id = home_data.get('active_medal')
+    active_title = get_title_display(active_title_id)
+    active_medal = get_medal_display(active_medal_id) if active_medal_id else t("home.no_medal")
     unlocked_titles = get_unlocked_titles(home_data)
     unlocked_medals = home_data.get('medals', [])
     
@@ -266,7 +271,7 @@ async def render_story_node(callback: CallbackQuery, user: dict, node_id: str):
             pct = user.get('hp', 0) / user.get('max_hp', 1)
             if pct < reqs['req_hp_pct']:
                 can_click, fail_reason = False, f"❌ Здоровье < {int(reqs['req_hp_pct'] * 100)}%"
-        elif 'req_title' in reqs and reqs['req_title'] not in unlocked_titles:
+        elif 'req_title' in reqs and normalize_title(reqs['req_title']) not in unlocked_titles:
             can_click, fail_reason = False, "❌ Нет титула"
         elif 'req_medal' in reqs and reqs['req_medal'] not in unlocked_medals:
             can_click, fail_reason = False, "❌ Нет медали"
