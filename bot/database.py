@@ -16,6 +16,12 @@ from data.mobs import BESTIARY
 from data.recipes import RECIPES
 from data.item_names import item_display_name
 from data.ingredient_names import ingredient_display_name
+from data.mob_names import mob_display_name
+from data.location_names import (
+    daily_dungeon_display,
+    solo_dungeon_display,
+    war_region_display,
+)
 from utils.titles import (
     TITLE_NOVICE, TITLE_SLIME_SLAYER, TITLE_BUTCHER, TITLE_BOSS_HUNTER,
     TITLE_GLADIATOR, TITLE_ARENA_CHAMPION, TITLE_WAR_HERO, TITLE_THINKER,
@@ -550,6 +556,10 @@ def get_all_home_skins() -> dict:
             skins[row[0]] = skin_data
         return skins
 
+def _localize_solo_dungeon(d: dict) -> dict:
+    d["name"], d["desc"] = solo_dungeon_display(d["id"], d["name"], d["desc"])
+    return d
+
 def get_all_solo_dungeons():
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -561,7 +571,7 @@ def get_all_solo_dungeons():
             d = dict(zip(cols, r))
             d["mobs"] = json.loads(d["mobs"]) if d["mobs"] else []
             d["room_weights"] = json.loads(d["room_weights"]) if d.get("room_weights") else None
-            res.append(d)
+            res.append(_localize_solo_dungeon(d))
         return res
 
 def get_solo_dungeon(d_id: str):
@@ -574,7 +584,7 @@ def get_solo_dungeon(d_id: str):
             d = dict(zip(cols, row))
             d["mobs"] = json.loads(d["mobs"]) if d["mobs"] else []
             d["room_weights"] = json.loads(d["room_weights"]) if d.get("room_weights") else None
-            return d
+            return _localize_solo_dungeon(d)
     return None
 
 def get_today_dungeon():
@@ -588,6 +598,7 @@ def get_today_dungeon():
             d = dict(zip(cols, row))
             d["mobs"] = json.loads(d["mobs"]) if d["mobs"] else []
             d["room_weights"] = json.loads(d["room_weights"]) if d.get("room_weights") else None
+            d["name"], d["desc"] = daily_dungeon_display(d["day_index"], d["name"], d["desc"])
             return d
     return None
 
@@ -606,6 +617,7 @@ def get_all_war_regions():
             d["id"] = d["region_id"]
             d["target"] = d["target_clears"]
             d["current"] = d["current_clears"]
+            d["name"], d["desc"] = war_region_display(d["region_id"], d["name"], d["desc"])
             res.append(d)
         return res
 
@@ -1036,8 +1048,21 @@ def get_setting(key: str, default: str) -> str:
 def get_mob_by_name(name: str):
     with get_connection() as conn:
         row = conn.cursor().execute("SELECT * FROM bestiary WHERE mob_id = ? OR name = ?", (name, name)).fetchone()
-        if row: return {"mob_id": row[0], "name": row[1], "hp_min": row[2], "hp_max": row[3], "dmg_min": row[4], "dmg_max": row[5], "row_pref": row[6], "skills": json.loads(row[7] if row[7] else "{}"), "gold_min": row[8], "gold_max": row[9], "xp_reward": row[10]}
-    return {"mob_id": "temple_guard", "name": "Храмовый Страж", "hp_min": 55, "hp_max": 75, "dmg_min": 12, "dmg_max": 18, "row_pref": "front", "skills": {}, "gold_min": 6, "gold_max": 14, "xp_reward": 12}
+        if row:
+            return {
+                "mob_id": row[0],
+                "name": mob_display_name(row[0], row[1]),
+                "hp_min": row[2],
+                "hp_max": row[3],
+                "dmg_min": row[4],
+                "dmg_max": row[5],
+                "row_pref": row[6],
+                "skills": json.loads(row[7] if row[7] else "{}"),
+                "gold_min": row[8],
+                "gold_max": row[9],
+                "xp_reward": row[10],
+            }
+    return {"mob_id": "temple_guard", "name": mob_display_name("temple_guard", "Храмовый Страж"), "hp_min": 55, "hp_max": 75, "dmg_min": 12, "dmg_max": 18, "row_pref": "front", "skills": {}, "gold_min": 6, "gold_max": 14, "xp_reward": 12}
 
 def get_all_ingredients(lang: str | None = None):
     with get_connection() as conn:

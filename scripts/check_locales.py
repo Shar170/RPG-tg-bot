@@ -82,6 +82,14 @@ def main() -> int:
     from data.item_names import ITEM_NAMES_EN
     from data.ingredients import INGREDIENTS
     from data.ingredient_names import INGREDIENT_NAMES_EN
+    from data.locations import SOLO_DUNGEONS, WAR_REGIONS, DAILY_DUNGEONS
+    from data.location_names import (
+        SOLO_DUNGEONS_EN,
+        WAR_REGIONS_EN,
+        DAILY_DUNGEONS_EN,
+    )
+    from data.mobs import BESTIARY
+    from data.mob_names import MOB_NAMES_EN
     from utils.titles import ALL_TITLES, MEDAL_TIERS
 
     required = [f"trait.{tid}" for tid in TRAITS]
@@ -103,6 +111,22 @@ def main() -> int:
         errors.append(f"missing English name for ingredient '{ingredient_id}'")
     for ingredient_id in sorted(set(INGREDIENT_NAMES_EN) - ingredient_ids):
         errors.append(f"English name for unknown ingredient '{ingredient_id}'")
+
+    solo_ids = {dungeon_id for dungeon_id, *_rest in SOLO_DUNGEONS}
+    for dungeon_id in sorted(solo_ids - set(SOLO_DUNGEONS_EN)):
+        errors.append(f"missing English location for solo dungeon '{dungeon_id}'")
+    war_ids = {region_id for region_id, *_rest in WAR_REGIONS}
+    for region_id in sorted(war_ids - set(WAR_REGIONS_EN)):
+        errors.append(f"missing English location for war region '{region_id}'")
+    daily_ids = {day_index for day_index, *_rest in DAILY_DUNGEONS}
+    for day_index in sorted(daily_ids - set(DAILY_DUNGEONS_EN)):
+        errors.append(f"missing English location for daily dungeon '{day_index}'")
+
+    mob_ids = {mob_id for mob_id, *_rest in BESTIARY}
+    for mob_id in sorted(mob_ids - set(MOB_NAMES_EN)):
+        errors.append(f"missing English name for mob '{mob_id}'")
+    for mob_id in sorted(set(MOB_NAMES_EN) - mob_ids):
+        errors.append(f"English name for unknown mob '{mob_id}'")
 
     if errors:
         print("Locale check failed:")

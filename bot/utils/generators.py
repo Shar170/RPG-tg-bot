@@ -2,6 +2,8 @@ import json
 import random
 import uuid
 
+from i18n import t
+
 def generate_emoji_puzzle(puzzle_category: str = None):
     """
     Генерирует процедурную головоломку.
@@ -15,12 +17,14 @@ def generate_emoji_puzzle(puzzle_category: str = None):
         a = random.randint(2, 10)
         b = random.randint(2, 10)
         c = random.randint(2, 10)
-        text = (
-            f"📜 **Древние руны:**\n\n"
-            f"{e1} + {e1} = {a+a}\n"
-            f"{e1} + {e2} = {a+b}\n"
-            f"{e2} - {e3} = {b-c}\n\n"
-            f"{e1} + {e2} × {e3} = ?"
+        text = t(
+            "puzzle.math_classic",
+            e1=e1,
+            e2=e2,
+            e3=e3,
+            aa=a + a,
+            ab=a + b,
+            bc=b - c,
         )
         correct = a + b * c
 
@@ -29,11 +33,13 @@ def generate_emoji_puzzle(puzzle_category: str = None):
         e1, e2, e3 = emojis
         m1 = random.randint(2, 5)
         m2 = random.randint(2, 5)
-        text = (
-            f"⚖️ **Алхимические весы находятся в равновесии:**\n\n"
-            f"1 {e1} = {m1} {e2}\n"
-            f"1 {e2} = {m2} {e3}\n\n"
-            f"Сколько {e3} уравновесят 1 {e1}?"
+        text = t(
+            "puzzle.math_weight",
+            e1=e1,
+            e2=e2,
+            e3=e3,
+            m1=m1,
+            m2=m2,
         )
         correct = m1 * m2
 
@@ -51,7 +57,7 @@ def generate_emoji_puzzle(puzzle_category: str = None):
                 seq.append(seq[-1] + seq[-2])
         correct = seq[-1]
         seq_str = ", ".join(map(str, seq[:-1])) + ", ?"
-        text = f"🔢 **Продолжите последовательность, высеченную на стене:**\n\n`{seq_str}`"
+        text = t("puzzle.sequence", seq=seq_str)
 
     elif puzzle_type == "magic_square":
         base = [[8, 1, 6], [3, 5, 7], [4, 9, 2]]
@@ -77,12 +83,7 @@ def generate_emoji_puzzle(puzzle_category: str = None):
                     row_strs.append(f"[{str(square[r][c]).center(3)}]")
             grid.append("".join(row_strs))
         grid_text = "\n".join(grid)
-        text = (
-            f"🔲 **Магический квадрат:**\n"
-            f"Сумма чисел в каждой строке, столбце и по диагоналям одинакова. Часть стёрта временем.\n\n"
-            f"`{grid_text}`\n\n"
-            f"Какое число скрыто под `[ ? ]`?"
-        )
+        text = t("puzzle.magic_square", grid=grid_text)
 
     elif puzzle_type == "matrix_rule":
         rule = random.choice(["add_first_two", "diff_first_two", "sum_edges"])
@@ -113,11 +114,7 @@ def generate_emoji_puzzle(puzzle_category: str = None):
         else:
             grid_text += f"`{rows[2][0]:>2}   ?  {rows[2][2]:>2}`"
 
-        text = (
-            f"🧩 **Руническая Таблица Чисел:**\n"
-            f"Найдите закономерность в строках и вычислите скрытое число:\n\n"
-            f"{grid_text}"
-        )
+        text = t("puzzle.matrix_rule", grid=grid_text)
 
     else:  
         h = random.randint(1, 12)
@@ -140,7 +137,7 @@ def generate_emoji_puzzle(puzzle_category: str = None):
         options = list(wrongs) + [ans_str]
         random.shuffle(options)
         return {
-            "text": f"🕰️ **Хроно-Алтарь Времени:**\nКакой наименьший угол образуют часовая и минутная стрелки в **{h:02d}:{m:02d}**?",
+            "text": t("puzzle.clock", h=h, m=m),
             "options": options,
             "correct": ans_str
         }
