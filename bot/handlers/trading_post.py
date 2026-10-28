@@ -1,4 +1,5 @@
 import time
+import json
 from collections import Counter
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Message
@@ -19,6 +20,106 @@ def get_tp_tax(price: int) -> int:
 
 def get_listing_fee(price: int) -> int:
     return max(1, int(price * 0.03))
+
+
+class TradeError(Exception):
+    pass
+
+
+def _change_item(conn, user_id, item_id, item_type, delta):
+    """Move one item within the caller's transaction."""
+    if item_type in ('card', 'box'):
+        table, col = ('user_cards', 'card_id') if item_type == 'card' else ('user_boxes', 'box_id')
+        if delta < 0:
+            cur = conn.execute(f'UPDATE {table} SET count=count-1 WHERE user_id=? AND {col}=? AND count>0', (user_id, item_id))
+            if cur.rowcount != 1:
+                raise TradeError('Предмет не найден в инвентаре!')
+        elif item_type == 'card':
+            conn.execute('INSERT INTO user_cards (user_id,card_id,count,first_at) VALUES (?,?,1,?) ON CONFLICT(user_id,card_id) DO UPDATE SET count=count+1', (user_id, item_id, time.time()))
+        else:
+            conn.execute('INSERT INTO user_boxes (user_id,box_id,count) VALUES (?,?,1) ON CONFLICT(user_id,box_id) DO UPDATE SET count=count+1', (user_id, item_id))
+        return
+    row = conn.execute('SELECT inventory FROM users WHERE user_id=?', (user_id,)).fetchone()
+    if not row:
+        raise TradeError('Игрок не найден!')
+    inv = json.loads(row[0] or '{}')
+    if item_type in ('weapon', 'armor', 'consumable'):
+        category = 'potions' if item_type == 'consumable' else 'backpack'
+        items = inv.setdefault(category, [])
+        if delta < 0:
+            if item_id not in items:
+                raise TradeError('Предмет не найден в инвентаре!')
+            items.remove(item_id)
+        else:
+            items.append(item_id)
+    elif item_type == 'material':
+        items = inv.setdefault('materials', {})
+        count = items.get(item_id, 0) + delta
+        if count < 0:
+            raise TradeError('Предмет не найден в инвентаре!')
+        if count:
+            items[item_id] = count
+        else:
+            items.pop(item_id, None)
+    else:
+        raise TradeError('Этот тип предмета нельзя передать.')
+    conn.execute('UPDATE users SET inventory=? WHERE user_id=?', (json.dumps(inv, ensure_ascii=False), user_id))
+
+
+def _buy_lot(lot_id, buyer_id):
+    with get_connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute('SELECT item_id,item_type,price,seller_id FROM trading_post WHERE lot_id=?', (lot_id,)).fetchone()
+        if not row:
+            raise TradeError('Лот больше не доступен!')
+        item_id, item_type, price, seller_id = row
+        if seller_id == buyer_id:
+            raise TradeError('Нельзя купить собственный лот!')
+        if price < 1:
+            raise TradeError('Некорректная цена лота!')
+        tax = get_tp_tax(price)
+        profit = price - tax
+        cur = conn.execute('UPDATE users SET gold=gold-? WHERE user_id=? AND gold>=?', (price, buyer_id, price))
+        if cur.rowcount != 1:
+            raise TradeError('Недостаточно золота!')
+        cur = conn.execute('UPDATE users SET gold=gold+? WHERE user_id=?', (profit, seller_id))
+        if cur.rowcount != 1:
+            raise TradeError('Продавец не найден!')
+        _change_item(conn, buyer_id, item_id, item_type, 1)
+        conn.execute('DELETE FROM trading_post WHERE lot_id=?', (lot_id,))
+        conn.execute('INSERT INTO tp_history (seller_id,buyer_id,item_id,price,tax_paid,timestamp) VALUES (?,?,?,?,?,?)', (seller_id, buyer_id, item_id, price, tax, time.time()))
+        return item_id, price, seller_id, profit
+
+
+def _create_lot(user_id, item_id, item_type, price):
+    fee = get_listing_fee(price)
+    with get_connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute('SELECT gold,level FROM users WHERE user_id=?', (user_id,)).fetchone()
+        if not row or row[0] < fee:
+            raise TradeError(f'Не хватает золота для сбора площадки ({fee} 🪙).')
+        max_slots = min(10, 5 + row[1] // 10)
+        if conn.execute('SELECT COUNT(*) FROM trading_post WHERE seller_id=?', (user_id,)).fetchone()[0] >= max_slots:
+            raise TradeError(f'Достигнут лимит слотов ({max_slots})!')
+        _change_item(conn, user_id, item_id, item_type, -1)
+        conn.execute("UPDATE users SET gold=gold-?,state='STATE_TOWN' WHERE user_id=?", (fee, user_id))
+        now = time.time()
+        conn.execute('INSERT INTO trading_post (seller_id,item_id,item_type,price,created_at,expires_at) VALUES (?,?,?,?,?,?)', (user_id, item_id, item_type, price, now, now + 86400))
+    return fee
+
+
+def _cancel_lot(lot_id, user_id):
+    with get_connection() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        lot = conn.execute('SELECT item_id,item_type,price FROM trading_post WHERE lot_id=? AND seller_id=?', (lot_id, user_id)).fetchone()
+        if not lot:
+            raise TradeError('Лот не найден!')
+        item_id, item_type, price = lot
+        _change_item(conn, user_id, item_id, item_type, 1)
+        refund = get_listing_fee(price) // 2
+        conn.execute('DELETE FROM trading_post WHERE lot_id=?', (lot_id,))
+        conn.execute('UPDATE users SET gold=gold+? WHERE user_id=?', (refund, user_id))
+        return refund
 
 def get_card_info(card_id: str):
     with get_connection() as conn:
@@ -41,7 +142,7 @@ def get_tp_limits(item_id: str, item_type: str):
     elif item_type == 'box':
         info = get_box_info(item_id)
         bp = 500 if info and info['rarity'] == 'epic' else 200
-        return int(bp * 0.5), int(bp * 3.0)
+        return max(1, int(bp * 0.5)), max(1, int(bp * 3.0))
     else:
         bp = get_item_price(item_id)
         return int(bp * 0.5), int(bp * 3.0)
@@ -130,40 +231,13 @@ async def tp_buy_info(callback: CallbackQuery):
 async def tp_buy_do(callback: CallbackQuery):
     lot_id = callback.data.split(":")[1]
     buyer_id = callback.from_user.id
-    buyer = get_user(buyer_id)
-    
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT item_id, item_type, price, seller_id FROM trading_post WHERE lot_id=?", (lot_id,))
-        lot = cursor.fetchone()
-        
-        if not lot: return await callback.answer("Лот больше не доступен!", show_alert=True)
-        item_id, item_type, price, seller_id = lot
-        
-        if seller_id == buyer_id:
-            return await callback.answer("Нельзя купить собственный лот!", show_alert=True)
-        
-        if buyer['gold'] < price: return await callback.answer("Недостаточно золота!", show_alert=True)
-            
-        # Удаляем лот (блокируем двойную покупку)
-        cursor.execute("DELETE FROM trading_post WHERE lot_id=?", (lot_id,))
-        
-        # Налоги
-        tax = get_tp_tax(price)
-        seller_profit = price - tax
-        
-        # Обновляем золото
-        cursor.execute("UPDATE users SET gold = gold - ? WHERE user_id = ?", (price, buyer_id))
-        cursor.execute("UPDATE users SET gold = gold + ? WHERE user_id = ?", (seller_profit, seller_id))
-        
-        # Лог сделки
-        cursor.execute("INSERT INTO tp_history (seller_id, buyer_id, item_id, price, tax_paid, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-                       (seller_id, buyer_id, item_id, price, tax, time.time()))
-        conn.commit()
-        
+    try:
+        item_id, price, seller_id, seller_profit = _buy_lot(lot_id, buyer_id)
+    except TradeError as exc:
+        return await callback.answer(str(exc), show_alert=True)
+
     name = get_item_name(item_id)
-    give_item(buyer_id, item_id, item_type, 1)
-    
+
     # --- ОТПРАВКА УВЕДОМЛЕНИЯ ПРОДАВЦУ ---
     try:
         notify_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Скрыть", callback_data="hide_notification")]])
@@ -239,6 +313,12 @@ async def tp_sell_list(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("tp_sell_setup:"))
 async def tp_sell_setup(callback: CallbackQuery, state: FSMContext):
     _, item_id, item_type = callback.data.split(":")
+    if item_type in ('weapon', 'armor'):
+        item = get_item(item_id)
+        if not item or item['type'] != item_type or item.get('stats', {}).get('req_lvl', 1) < 5:
+            return await callback.answer("Этот предмет нельзя выставить!", show_alert=True)
+    elif item_type not in ('material', 'card', 'box'):
+        return await callback.answer("Этот предмет нельзя выставить!", show_alert=True)
     min_p, max_p = get_tp_limits(item_id, item_type)
     
     await state.set_state(TPState.waiting_price)
@@ -267,29 +347,14 @@ async def process_tp_price(message: Message, state: FSMContext):
         return await message.answer(f"⚠️ Цена вне диапазона! Введите от {min_p} до {max_p}.")
         
     user_id = message.from_user.id
-    user = get_user(user_id)
-    fee = get_listing_fee(price)
-    
-    if user['gold'] < fee:
-        await state.clear()
-        update_user(user_id, state='STATE_TOWN')
-        return await message.answer(f"❌ У вас не хватает золота для оплаты сбора площадки ({fee} 🪙).")
-        
     item_id, item_type = data['item_id'], data['item_type']
-    
-    if not take_item(user_id, item_id, item_type, 1):
+    try:
+        fee = _create_lot(user_id, item_id, item_type, price)
+    except TradeError as exc:
         await state.clear()
         update_user(user_id, state='STATE_TOWN')
-        return await message.answer("❌ Предмет не найден в инвентаре!")
-        
-    update_user(user_id, gold=user['gold'] - fee, state='STATE_TOWN')
-    
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO trading_post (seller_id, item_id, item_type, price, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
-                       (user_id, item_id, item_type, price, time.time(), time.time() + 86400))
-        conn.commit()
-        
+        return await message.answer(f"❌ {exc}")
+
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="В Барахолку", callback_data="tp_main")]])
     msg = await message.answer(f"✅ Лот **{get_item_name(item_id)}** успешно выставлен за **{price} 🪙**!\nСбор площадки: -{fee} 🪙.", reply_markup=kb, parse_mode="Markdown")
@@ -321,23 +386,11 @@ async def tp_cancel(callback: CallbackQuery):
     lot_id = callback.data.split(":")[1]
     user_id = callback.from_user.id
     
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT item_id, item_type, price FROM trading_post WHERE lot_id=? AND seller_id=?", (lot_id, user_id))
-        lot = cursor.fetchone()
-        
-        if not lot: return await callback.answer("Лот не найден!", show_alert=True)
-        item_id, item_type, price = lot
-        
-        cursor.execute("DELETE FROM trading_post WHERE lot_id=?", (lot_id,))
-        conn.commit()
-        
-    give_item(user_id, item_id, item_type, 1)
-    refund = get_listing_fee(price) // 2
-    if refund > 0:
-        user = get_user(user_id)
-        update_user(user_id, gold=user['gold'] + refund)
-        
+    try:
+        refund = _cancel_lot(lot_id, user_id)
+    except TradeError as exc:
+        return await callback.answer(str(exc), show_alert=True)
+
     await callback.answer(f"Лот снят! Возмещено {refund} 🪙.", show_alert=True)
     await tp_my_lots(callback)
 

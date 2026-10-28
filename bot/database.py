@@ -7,6 +7,7 @@ from config import DB_PATH
 
 # Импорты из модуля data/
 from data.ingredients import INGREDIENTS
+from data.traits import normalize_traits
 from data.items import ITEMS
 from data.loot import LOOT_TABLES
 from data.cards import CARD_SETS, CARDS, LOOT_BOXES
@@ -27,8 +28,11 @@ from utils.titles import (
     TITLE_GLADIATOR, TITLE_ARENA_CHAMPION, TITLE_WAR_HERO, TITLE_THINKER,
     TITLE_EMPTY_HEAD, TITLE_FIREFIGHTER, TITLE_GOBLIN_BANE, TITLE_IDOL_BREAKER,
     TITLE_KEEPER_BURIER, TITLE_POTION_MASTER, TITLE_SMITH, TITLE_LUCKY,
-    ALL_TITLES, make_medal_id, parse_medal_id, get_medal_display as _render_medal,
+    ALL_TITLES, WAR_MEDAL_THRESHOLDS, WAR_LIBERATOR_TIER,
+    collect_medal_ids, make_medal_id, parse_medal_id,
+    get_medal_display as _render_medal,
 )
+from i18n import t
 
 def get_connection():
     return sqlite3.connect(DB_PATH, timeout=10.0)
@@ -73,6 +77,16 @@ def init_db():
         except sqlite3.OperationalError: pass
         try: cursor.execute("ALTER TABLE users ADD COLUMN language TEXT DEFAULT 'ru'")
         except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE users ADD COLUMN last_visit_date TEXT DEFAULT ''")
+        except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE users ADD COLUMN visit_streak INTEGER DEFAULT 0")
+        except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE users ADD COLUMN best_visit_streak INTEGER DEFAULT 0")
+        except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE war_regions ADD COLUMN cycle INTEGER DEFAULT 0")
+        except sqlite3.OperationalError: pass
+        try: cursor.execute("ALTER TABLE war_regions ADD COLUMN reset_at REAL DEFAULT 0")
+        except sqlite3.OperationalError: pass
         
         cursor.execute('''CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY, username TEXT, state TEXT, hp INTEGER, max_hp INTEGER,
@@ -84,6 +98,7 @@ def init_db():
             notified_hp INTEGER DEFAULT 0, notified_energy INTEGER DEFAULT 0,
             last_active_time REAL DEFAULT 0, reengagement_stage INTEGER DEFAULT 0,
             language TEXT DEFAULT 'ru',
+            last_visit_date TEXT DEFAULT '', visit_streak INTEGER DEFAULT 0, best_visit_streak INTEGER DEFAULT 0,
             story_progress TEXT DEFAULT '{"story_id": "", "chapter_id": "", "current_node_id": "", "flags": {}}')''')
         
         # Миграция для старых баз: колонки story_progress в CREATE TABLE раньше не было
@@ -98,9 +113,11 @@ def init_db():
             min_rooms INTEGER DEFAULT 3, max_rooms INTEGER DEFAULT 4, room_weights TEXT DEFAULT '{"combat": 50, "puzzle": 20, "treasure": 15, "empty": 15}')''')
         
         cursor.execute('''CREATE TABLE IF NOT EXISTS war_regions (
-            region_id INTEGER PRIMARY KEY, name TEXT, desc TEXT, target_clears INTEGER DEFAULT 100000, 
+            region_id INTEGER PRIMARY KEY, name TEXT, desc TEXT, target_clears INTEGER DEFAULT 1000, 
             current_clears INTEGER DEFAULT 0, is_liberated INTEGER DEFAULT 0, boss_id TEXT, mobs TEXT,
-            min_rooms INTEGER DEFAULT 4, max_rooms INTEGER DEFAULT 6, room_weights TEXT DEFAULT '{"combat": 60, "puzzle": 15, "treasure": 15, "empty": 10}')''')
+            min_rooms INTEGER DEFAULT 4, max_rooms INTEGER DEFAULT 6,
+            room_weights TEXT DEFAULT '{"combat": 60, "puzzle": 15, "treasure": 15, "empty": 10}',
+            cycle INTEGER DEFAULT 0, reset_at REAL DEFAULT 0)''')
 
         cursor.execute('''CREATE TABLE IF NOT EXISTS solo_dungeons (
             id TEXT PRIMARY KEY, name TEXT, desc TEXT, mobs TEXT, boss_id TEXT, 
@@ -220,6 +237,46 @@ def mark_user_active(user_id: int):
         cursor = conn.cursor()
         cursor.execute("UPDATE users SET last_active_time = ?, reengagement_stage = 0 WHERE user_id = ?", (time.time(), user_id))
         conn.commit()
+
+# Чтобы не читать home_data на каждый update, проверяем дату визита не чаще
+# одного раза в день на процесс.
+_DAILY_VISIT_CACHE: dict[int, str] = {}
+
+def track_daily_visit(user_id: int) -> int:
+    """Отмечает ежедневный визит и обновляет серию дней подряд.
+
+    Возвращает новую серию, либо 0, если сегодня визит уже был учтён.
+    """
+    today = datetime.date.today()
+    today_s = today.isoformat()
+    if _DAILY_VISIT_CACHE.get(user_id) == today_s:
+        return 0
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        row = cursor.execute(
+            "SELECT last_visit_date, visit_streak, best_visit_streak FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        if not row:
+            return 0
+
+        _DAILY_VISIT_CACHE[user_id] = today_s
+        last_visit, streak, best_streak = row
+        if last_visit == today_s:
+            return 0
+
+        yesterday = (today - datetime.timedelta(days=1)).isoformat()
+        new_streak = (streak or 0) + 1 if last_visit == yesterday else 1
+        new_best = max(best_streak or 0, new_streak)
+        cursor.execute(
+            "UPDATE users SET last_visit_date = ?, visit_streak = ?, best_visit_streak = ? WHERE user_id = ?",
+            (today_s, new_streak, new_best, user_id),
+        )
+        conn.commit()
+
+    sync_medals(user_id)
+    return new_streak
 
 def get_online_users(minutes: int = 15) -> tuple[int, list]:
     threshold = time.time() - (minutes * 60)
@@ -407,11 +464,25 @@ def simulate_bot_activity():
         for bot_name, clan_id in bots:
             action = random.choice(["war", "arena", "dungeon", "craft"])
             if action == "war":
-                cursor.execute("SELECT region_id, name FROM war_regions WHERE is_liberated=0 ORDER BY RANDOM() LIMIT 1")
+                cursor.execute(
+                    "SELECT region_id, name, target_clears, current_clears "
+                    "FROM war_regions WHERE is_liberated=0 ORDER BY RANDOM() LIMIT 1"
+                )
                 reg = cursor.fetchone()
                 if reg:
-                    cursor.execute("UPDATE war_regions SET current_clears = current_clears + ? WHERE region_id=?", (random.randint(15, 40), reg[0]))
-                    events_to_add.append(f"🌍 Игрок **{bot_name}** внес крупный вклад в освобождение региона [{reg[1]}].")
+                    region_id, region_name, target, current = reg
+                    target = max(1, int(target or 1))
+                    current = int(current or 0)
+                    new_current = min(target, current + random.randint(15, 40))
+                    newly_liberated = current < target <= new_current
+                    cursor.execute(
+                        "UPDATE war_regions SET current_clears = ?, is_liberated = ? "
+                        "WHERE region_id = ?",
+                        (new_current, 1 if new_current >= target else 0, region_id),
+                    )
+                    events_to_add.append(f"🌍 Игрок **{bot_name}** внес крупный вклад в освобождение региона [{region_name}].")
+                    if newly_liberated:
+                        events_to_add.append(f"🏆 Регион [{region_name}] полностью освобожден от сил Тьмы!")
             elif action == "dungeon":
                 if clan_id != 0:
                     cursor.execute("UPDATE clans SET weekly_raids = weekly_raids + ? WHERE clan_id=?", (random.randint(5, 12), clan_id))
@@ -419,6 +490,9 @@ def simulate_bot_activity():
             elif action == "craft":
                 events_to_add.append(f"🔨 Игрок **{bot_name}** создал Легендарное снаряжение в Мастерской.")
         
+        # Если боты освободили последний регион — планируем/выполняем сброс войны.
+        _maybe_reset_war_cycle(cursor)
+
         cursor.execute("INSERT OR REPLACE INTO game_settings (key, value) VALUES ('last_bot_sim', ?)", (str(now),))
         conn.commit()
 
@@ -443,6 +517,7 @@ def seed_all():
             ("clan_create_min_level", "50"), ("clan_create_cost_gems", "100"),
             ("clan_create_cost_gold", "0"), ("dungeon_trap_chance", "0.2"),
             ("dungeon_mimic_chance", "0.15"),
+            ("war_reset_delay_seconds", "3600"),
             ("mg_fish_gold_min", "70"), ("mg_fish_gold_max", "120"),
             ("mg_fish_gem_chance", "0.10"), ("mg_fish_gem_amount", "1"),
             ("mg_mine_gold_min", "35"), ("mg_mine_gold_max", "65"),
@@ -455,33 +530,35 @@ def seed_all():
         cursor.executemany("INSERT OR IGNORE INTO game_settings VALUES (?, ?)", settings)
         
         # Импортированные таблицы (карточки, предметы, локации, мобы)
-        cursor.executemany("INSERT OR REPLACE INTO card_sets VALUES (?, ?, ?, ?, ?, ?)", CARD_SETS)
-        cursor.executemany("INSERT OR REPLACE INTO cards VALUES (?, ?, ?, ?, ?)", CARDS)
-        cursor.executemany("INSERT OR REPLACE INTO loot_boxes VALUES (?, ?, ?, ?, ?, ?, ?)", LOOT_BOXES)
-        cursor.executemany("INSERT OR REPLACE INTO home_skins VALUES (?, ?, ?, ?, ?, ?)", HOME_SKINS)
+        cursor.executemany("INSERT OR IGNORE INTO card_sets VALUES (?, ?, ?, ?, ?, ?)", CARD_SETS)
+        cursor.executemany("INSERT OR IGNORE INTO cards VALUES (?, ?, ?, ?, ?)", CARDS)
+        cursor.executemany("INSERT OR IGNORE INTO loot_boxes VALUES (?, ?, ?, ?, ?, ?, ?)", LOOT_BOXES)
+        cursor.executemany("INSERT OR IGNORE INTO home_skins VALUES (?, ?, ?, ?, ?, ?)", HOME_SKINS)
         cursor.executemany("INSERT OR IGNORE INTO solo_dungeons VALUES (?, ?, ?, ?, ?, ?, ?, ?)", SOLO_DUNGEONS)
         
         for w in WAR_REGIONS:
             try: cursor.execute("INSERT OR IGNORE INTO war_regions (region_id, name, desc, target_clears, current_clears, is_liberated, boss_id, mobs) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", w)
             except: pass
             
-        cursor.executemany("INSERT OR REPLACE INTO bestiary VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", BESTIARY)
+        cursor.executemany("INSERT OR IGNORE INTO bestiary VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", BESTIARY)
         
         for d in DAILY_DUNGEONS:
             try: cursor.execute("INSERT OR IGNORE INTO daily_dungeons (day_index, name, desc, mobs, loot_id, loot_name, boss_id, mob_modifier) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", d)
             except: pass
             
-        cursor.executemany("INSERT OR REPLACE INTO alchemy_ingredients VALUES (?, ?, ?, ?)", INGREDIENTS)
-        cursor.executemany("INSERT OR REPLACE INTO items VALUES (?, ?, ?, ?, ?)", ITEMS)
-        cursor.executemany("INSERT OR REPLACE INTO recipes VALUES (?, ?, ?, ?)", RECIPES)
+        cursor.executemany("INSERT OR IGNORE INTO alchemy_ingredients VALUES (?, ?, ?, ?)", INGREDIENTS)
+        cursor.executemany("INSERT OR IGNORE INTO items VALUES (?, ?, ?, ?, ?)", ITEMS)
+        cursor.executemany("INSERT OR IGNORE INTO recipes VALUES (?, ?, ?, ?)", RECIPES)
         
         # Обновление таблиц лута
-        cursor.execute("DELETE FROM loot_tables")
-        cursor.executemany("INSERT INTO loot_tables (location_id, item_id, chance, min_amount, max_amount) VALUES (?, ?, ?, ?, ?)", LOOT_TABLES)
+        if not cursor.execute("SELECT 1 FROM loot_tables LIMIT 1").fetchone():
+            cursor.executemany("INSERT INTO loot_tables (location_id, item_id, chance, min_amount, max_amount) VALUES (?, ?, ?, ?, ?)", LOOT_TABLES)
         
         conn.commit()
         seed_bots()
-        seed_test_story()
+        # Never reseed over a database containing authored stories.
+        if not cursor.execute("SELECT 1 FROM stories LIMIT 1").fetchone():
+            seed_test_story()
 
 def give_item(user_id: int, item_id: str, item_type: str, amount: int = 1):
     user = get_user(user_id)
@@ -605,6 +682,8 @@ def get_today_dungeon():
 def get_all_war_regions():
     with get_connection() as conn:
         cursor = conn.cursor()
+        _maybe_reset_war_cycle(cursor)
+        conn.commit()
         cursor.execute("SELECT * FROM war_regions ORDER BY region_id ASC")
         rows = cursor.fetchall()
         res = []
@@ -613,7 +692,8 @@ def get_all_war_regions():
             d = dict(zip(cols, r))
             d["mobs"] = json.loads(d["mobs"]) if d["mobs"] else []
             d["room_weights"] = json.loads(d["room_weights"]) if d.get("room_weights") else None
-            d["pct"] = round(min(100.0, (d["current_clears"] / d["target_clears"]) * 100), 2)
+            target = d["target_clears"] or 1
+            d["pct"] = round(min(100.0, (d["current_clears"] / target) * 100), 2)
             d["id"] = d["region_id"]
             d["target"] = d["target_clears"]
             d["current"] = d["current_clears"]
@@ -711,7 +791,75 @@ def track_stat(user_id: int, stat_name: str, amount: int = 1):
     stats = home.setdefault('stats', {})
     stats[stat_name] = stats.get(stat_name, 0) + amount
     home['stats'] = stats
+
+    earned = collect_medal_ids(
+        stats,
+        level=user.get('level', 1),
+        visit_streak=user.get('visit_streak', 0),
+        best_visit_streak=user.get('best_visit_streak', 0),
+    )
+    medals = home.setdefault('medals', [])
+    for medal_id in earned:
+        if medal_id not in medals:
+            medals.append(medal_id)
+    home['medals'] = medals
+
     update_user(user_id, home_data=home)
+
+
+def award_medal(user_id: int, medal_id: str) -> bool:
+    """Выдаёт медаль, если её ещё нет. Возвращает True при новой медали."""
+    user = get_user(user_id)
+    if not user:
+        return False
+
+    home = user.get('home_data', {})
+    medals = home.setdefault('medals', [])
+    if medal_id in medals:
+        return False
+
+    medals.append(medal_id)
+    home['medals'] = medals
+    update_user(user_id, home_data=home)
+    return True
+
+
+def sync_medals(user_id: int, home_data: dict | None = None) -> tuple[dict, list[str]]:
+    """Досчитывает все накопительные медали (уровень, статистика, коллекция).
+
+    Возвращает актуальный home_data и список только что выданных медалей.
+    """
+    user = get_user(user_id)
+    if not user:
+        return home_data or {}, []
+
+    if home_data is None:
+        home_data = user.get('home_data', {})
+
+    with get_connection() as conn:
+        row = conn.cursor().execute(
+            "SELECT COUNT(*) FROM user_cards WHERE user_id = ? AND count > 0",
+            (user_id,),
+        ).fetchone()
+        cards_count = row[0] if row else 0
+
+    stats = home_data.setdefault('stats', {})
+    earned = collect_medal_ids(
+        stats,
+        level=user.get('level', 1),
+        visit_streak=user.get('visit_streak', 0),
+        best_visit_streak=user.get('best_visit_streak', 0),
+        cards_count=cards_count,
+    )
+    medals = home_data.setdefault('medals', [])
+    newly_earned = [medal_id for medal_id in earned if medal_id not in medals]
+
+    if newly_earned:
+        medals.extend(newly_earned)
+        home_data['medals'] = medals
+        update_user(user_id, home_data=home_data)
+
+    return home_data, newly_earned
 
 def get_unlocked_titles(home_data: dict) -> list[str]:
     stats = home_data.get('stats', {})
@@ -739,47 +887,125 @@ def get_unlocked_titles(home_data: dict) -> list[str]:
     unlocked = set(titles)
     return [title_id for title_id in ALL_TITLES if title_id in unlocked]
 
-def progress_war_region(region_id: int, user_id: int, home_data: dict = None) -> tuple[dict, int]:
+def _war_reset_delay_seconds(cursor) -> int:
+    row = cursor.execute(
+        "SELECT value FROM game_settings WHERE key = 'war_reset_delay_seconds'"
+    ).fetchone()
+    try:
+        return max(60, int(row[0])) if row else 3600
+    except (TypeError, ValueError):
+        return 3600
+
+
+def _maybe_reset_war_cycle(cursor, now: float | None = None) -> bool:
+    """Планирует и выполняет сброс войны после освобождения всех регионов.
+
+    Сброс откладывается на war_reset_delay_seconds, чтобы все игроки,
+    одновременно завершающие финальный рейд, успели получить медаль
+    «Освободитель». Возвращает True, если сброс произошёл.
+    """
+    now = time.time() if now is None else now
+    row = cursor.execute(
+        "SELECT COUNT(*), COALESCE(SUM(is_liberated), 0), COALESCE(MAX(reset_at), 0) "
+        "FROM war_regions"
+    ).fetchone()
+    total, liberated, reset_at = row
+    if not total:
+        return False
+
+    if liberated < total:
+        if reset_at:
+            cursor.execute("UPDATE war_regions SET reset_at = 0 WHERE reset_at != 0")
+        return False
+
+    if reset_at <= 0:
+        cursor.execute(
+            "UPDATE war_regions SET reset_at = ?",
+            (now + _war_reset_delay_seconds(cursor),),
+        )
+        return False
+
+    if now < reset_at:
+        return False
+
+    cursor.execute(
+        "UPDATE war_regions "
+        "SET current_clears = 0, is_liberated = 0, reset_at = 0, "
+        "cycle = COALESCE(cycle, 0) + 1"
+    )
+    return True
+
+
+def progress_war_region(
+    region_id: int,
+    user_id: int,
+    home_data: dict = None,
+    war_cycle: int | None = None,
+) -> tuple[dict, int]:
     user = get_user(user_id)
-    if home_data is None: home_data = user.get('home_data', {})
-    
+    if home_data is None:
+        home_data = user.get('home_data', {}) if user else {}
+
     medals = home_data.setdefault('medals', [])
     stats = home_data.setdefault('stats', {})
     stats['war_clears'] = stats.get('war_clears', 0) + 1
-    
+
     reg_clears_key = f'war_clears_reg_{region_id}'
     stats[reg_clears_key] = stats.get(reg_clears_key, 0) + 1
     reg_clears = stats[reg_clears_key]
-    
+
     gems_gained = 0
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT name, target_clears, current_clears, is_liberated FROM war_regions WHERE region_id = ?", (region_id,))
-        row = cursor.fetchone()
-        if row:
-            r_name, target, current, is_lib = row
-            
-            if reg_clears == 10:
-                m_title = make_medal_id("defender", region_id)
-                if m_title not in medals: medals.append(m_title)
-            elif reg_clears == 50:
-                m_title = make_medal_id("veteran", region_id)
-                if m_title not in medals: medals.append(m_title)
-            elif reg_clears == 100:
-                m_title = make_medal_id("hero", region_id)
-                if m_title not in medals: medals.append(m_title)
+        cursor.execute("BEGIN IMMEDIATE")  # сериализуем финальные зачистки
+        try:
+            _maybe_reset_war_cycle(cursor)
+            cursor.execute(
+                "SELECT name, target_clears, current_clears, is_liberated, COALESCE(cycle, 0) "
+                "FROM war_regions WHERE region_id = ?",
+                (region_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                _r_name, target, current, is_lib, cycle = row
+                target = max(1, int(target or 1))
+                # Рейд начался в прошлом цикле войны — его вклад уже не учитываем.
+                stale_cycle = war_cycle is not None and int(war_cycle) != int(cycle)
 
-            new_current = current + 1
-            new_lib = 1 if new_current >= target else is_lib
+                if not stale_cycle:
+                    # Участник/защитник/ветеран/герой — по числу зачисток региона.
+                    # Проверяем >=, чтобы медаль не терялась при пропущенном пороге.
+                    for tier, threshold in WAR_MEDAL_THRESHOLDS.items():
+                        if reg_clears >= threshold:
+                            medal_id = make_medal_id(tier, region_id)
+                            if medal_id not in medals:
+                                medals.append(medal_id)
 
-            if new_lib == 1 and is_lib == 0:
-                lib_medal = make_medal_id("liberator", region_id)
-                if lib_medal not in medals:
-                    medals.append(lib_medal)
-                    gems_gained += 25
+                    if is_lib:
+                        # Игрок завершил рейд во время финальной волны: регион
+                        # освобождён другим/этим же игроком только что.
+                        lib_medal = make_medal_id(WAR_LIBERATOR_TIER, region_id)
+                        if lib_medal not in medals:
+                            medals.append(lib_medal)
+                    else:
+                        new_current = current + 1
+                        new_lib = 1 if new_current >= target else 0
+                        cursor.execute(
+                            "UPDATE war_regions SET current_clears = ?, is_liberated = ? "
+                            "WHERE region_id = ?",
+                            (new_current, new_lib, region_id),
+                        )
+                        if new_lib:
+                            lib_medal = make_medal_id(WAR_LIBERATOR_TIER, region_id)
+                            if lib_medal not in medals:
+                                medals.append(lib_medal)
+                            gems_gained += 25
+                        _maybe_reset_war_cycle(cursor)
 
-            cursor.execute("UPDATE war_regions SET current_clears = ?, is_liberated = ? WHERE region_id = ?", (new_current, new_lib, region_id))
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
     home_data['medals'] = medals
     home_data['stats'] = stats
@@ -787,16 +1013,32 @@ def progress_war_region(region_id: int, user_id: int, home_data: dict = None) ->
 
 def get_medal_display(medal_id: str, lang: str | None = None) -> str:
     """Локализованное название медали по её ID."""
-    parsed = parse_medal_id(medal_id)
-    if not parsed:
-        return medal_id
-    _tier, region_id = parsed
-    region_name = f"#{region_id}"
-    with get_connection() as conn:
-        row = conn.execute("SELECT name FROM war_regions WHERE region_id = ?", (region_id,)).fetchone()
-        if row:
-            region_name = row[0]
-    return _render_medal(medal_id, region_name, lang=lang)
+    if not isinstance(medal_id, str):
+        return str(medal_id)
+
+    if medal_id.startswith("war_"):
+        parsed = parse_medal_id(medal_id)
+        if parsed:
+            _tier, region_id = parsed
+            region_name = f"#{region_id}"
+            with get_connection() as conn:
+                row = conn.execute("SELECT name FROM war_regions WHERE region_id = ?", (region_id,)).fetchone()
+                if row:
+                    region_name = row[0]
+            return _render_medal(medal_id, region_name, lang=lang)
+        # war_clears_* — статическая медаль, отображается через локаль ниже.
+
+    if medal_id.startswith("story_") and not medal_id.startswith("story_count_"):
+        story_id = medal_id[len("story_"):]
+        story_title = story_id
+        with get_connection() as conn:
+            row = conn.execute("SELECT title FROM stories WHERE id = ?", (story_id,)).fetchone()
+            if row and row[0]:
+                story_title = row[0]
+        return t("medal.story", lang=lang, story=story_title)
+
+    rendered = t(f"medal.{medal_id}", lang=lang)
+    return medal_id if rendered == f"medal.{medal_id}" else rendered
 
 def get_user_language(user_id: int) -> str | None:
     """Лёгкий запрос без построения всего профиля (нужен middleware)."""
@@ -891,19 +1133,19 @@ def update_user(user_id: int, **kwargs):
 
 def consume_energy(user_id: int, amount: int = 1) -> bool:
     if amount <= 0: return True
-    user = get_user(user_id) 
-    current_energy = user.get('energy', 5)
-    
-    if current_energy >= amount:
-        max_e = get_player_max_energy(user.get('level', 1))
-        new_energy = current_energy - amount
-        
-        if current_energy >= max_e and new_energy < max_e:
-            update_user(user_id, energy=new_energy, last_energy_time=int(time.time()))
-        else:
-            update_user(user_id, energy=new_energy)
-        return True
-    return False
+    user = get_user(user_id)
+    if not user:
+        return False
+    max_e = get_player_max_energy(user.get('level', 1))
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "UPDATE users SET last_energy_time = CASE WHEN energy >= ? AND energy - ? < ? "
+            "THEN ? ELSE last_energy_time END, energy = energy - ? "
+            "WHERE user_id = ? AND energy >= ?",
+            (max_e, amount, max_e, int(time.time()), amount, user_id, amount),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
 
 def get_clan(clan_id: int):
     with get_connection() as conn:
@@ -1069,7 +1311,7 @@ def get_all_ingredients(lang: str | None = None):
         return {
             row[0]: {
                 "name": ingredient_display_name(row[0], row[1], lang=lang),
-                "traits": json.loads(row[2]),
+                "traits": normalize_traits(json.loads(row[2])),
             }
             for row in conn.cursor().execute("SELECT * FROM alchemy_ingredients").fetchall()
         }
@@ -1327,9 +1569,6 @@ def get_story_choices(node_id: str) -> list:
 def seed_test_story():
     with get_connection() as conn:
         cursor = conn.cursor()
-        
-        # Очистка старых тестовых данных во избежание дублирования кнопок при рестартах
-        cursor.execute("DELETE FROM story_choices WHERE node_id LIKE 'node_%'")
         
         cursor.execute("INSERT OR REPLACE INTO stories (id, title, desc, req_admin, start_node_id) VALUES (?, ?, ?, ?, ?)", ('test_story_1', 'Темный переулок', 'Тестовый квест с выборами, боем и флагами', 243702559, 'node_start'))
         cursor.execute("INSERT OR REPLACE INTO story_chapters (id, story_id, title) VALUES (?, ?, ?)", ('chap_1', 'test_story_1', 'Глава 1: Встреча'))

@@ -8,10 +8,10 @@ from database import (
     get_connection, get_user, update_user, check_and_generate_quests, 
     get_unlocked_titles, get_top_clans, get_recent_global_events, 
     simulate_bot_activity, get_clan, get_all_home_skins, get_online_users,
-    get_player_max_energy, get_medal_display
+    get_player_max_energy, get_medal_display, track_daily_visit
 )
 from i18n import t, t_plural
-from utils.titles import TITLE_NOVICE, get_title_display, normalize_title
+from utils.titles import TITLE_NOVICE, get_title_display, get_medal_category, normalize_title
 
 router = Router()
 
@@ -138,6 +138,9 @@ async def cmd_start(message: Message):
         message.from_user.id,
         message.from_user.username or "Игрок",
     )
+    # Для нового аккаунта middleware ещё не видел записи в users.
+    track_daily_visit(user['user_id'])
+    user = get_user(user['user_id']) or user
     text = generate_town_text(user)
     msg = await message.answer(text, reply_markup=get_town_kb(user), parse_mode="Markdown")
     update_user(user['user_id'], state='STATE_TOWN', last_msg_id=msg.message_id)
@@ -198,6 +201,11 @@ async def cb_town_home(callback: CallbackQuery):
             pvp=stats.get('pvp_wins', 0),
             deaths=stats.get('deaths_count', 0),
         )
+        + t(
+            "home.streak_line",
+            streak=user.get('visit_streak', 0),
+            best=user.get('best_visit_streak', 0),
+        )
     )
     
     all_quests_completed = len(quests.get("quests", [])) > 0 and all(q.get("completed") for q in quests.get("quests", []))
@@ -254,14 +262,16 @@ async def cb_town_home_medals(callback: CallbackQuery):
     home_data = user.get('home_data', {})
     medals = home_data.get('medals', [])
     
-    text = t("home.medals_text")
+    text = t("home.medals_text", count=len(medals))
     buttons = []
     
     if not medals:
         text += t("home.medals_empty")
     else:
         text += t("home.medals_choose")
-        for idx, medal in enumerate(medals):
+        ordered_medals = sorted(medals, key=lambda medal: (get_medal_category(medal), medal))
+        for medal in ordered_medals:
+            idx = medals.index(medal)
             label = get_medal_display(medal)
             btn_text = f"✅ {label}" if medal == home_data.get('active_medal') else label
             buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"home_set_medal:{idx}")])

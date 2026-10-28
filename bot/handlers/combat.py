@@ -6,7 +6,7 @@ from database import (
     get_user, update_user, get_item, get_loot_table, get_item_name, get_setting,
     apply_flee_penalty, apply_death_penalty, add_quest_progress, get_clan, update_clan,
     calculate_damage_received, progress_war_region, track_stat, add_global_event,
-    roll_card, log_event  
+    roll_card, log_event, sync_medals, get_medal_display,
 )
 from utils.potions import analyze_traits, parse_custom_potion_traits, get_potion_display_name
 from i18n import t
@@ -152,7 +152,10 @@ async def handle_combat_victory(callback: CallbackQuery, user_id: int, combat: d
         if c2: drop_msg += t("combat.card_trophy", emoji=c2['emoji'], name=c2['name'], rarity=c2['rarity'])
 
     if dungeon_data.get('dungeon_type') == 'war' and is_boss:
-        home, bonus_gems = progress_war_region(dungeon_data['war_region_id'], user_id, home_data=home)
+        home, bonus_gems = progress_war_region(
+            dungeon_data['war_region_id'], user_id, home_data=home,
+            war_cycle=dungeon_data.get('war_cycle'),
+        )
         fresh_user['gems'] = fresh_user.get('gems', 0) + bonus_gems
         drop_msg += t("combat.war_contribution")
         add_global_event(f"🌍 Игрок **{fresh_user['username']}** нанес сокрушительный удар по силам демонов в Войне за Камарию!")
@@ -161,6 +164,7 @@ async def handle_combat_victory(callback: CallbackQuery, user_id: int, combat: d
             add_global_event(f"🏆 Великий герой **{fresh_user['username']}** нанес решающий удар и полностью ОСВОБОДИЛ один из регионов!")
             
     elif is_boss and dungeon_data.get('dungeon_type') == 'event':
+        stats['event_bosses_killed'] = stats.get('event_bosses_killed', 0) + 1
         add_global_event(f"💀 Игрок **{fresh_user['username']}** бросил вызов Боссу Дня и вышел победителем!")
 
     update_user(
@@ -168,6 +172,13 @@ async def handle_combat_victory(callback: CallbackQuery, user_id: int, combat: d
         hp=fresh_user['hp'], max_hp=fresh_user['max_hp'], level=fresh_user['level'], xp=fresh_user['xp'],
         inventory=inv, combat_data={}, dungeon_data=dungeon_data, home_data=home
     )
+
+    _home, new_medals = sync_medals(user_id)
+    if new_medals:
+        drop_msg += t(
+            "combat.medal_unlocked",
+            medals=", ".join(get_medal_display(medal_id) for medal_id in new_medals),
+        )
 
     if is_boss:
         add_quest_progress(user_id, "raid_success", 1)

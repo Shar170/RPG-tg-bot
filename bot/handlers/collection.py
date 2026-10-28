@@ -3,7 +3,7 @@ import random
 import time
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from database import get_connection, get_user, update_user, log_event, add_quest_progress
+from database import get_connection, get_user, update_user, log_event, add_quest_progress, sync_medals
 
 router = Router()
 
@@ -295,6 +295,7 @@ async def collection_craft_execute(callback: CallbackQuery):
         
     # ЛОГИРОВАНИЕ
     log_event(user['user_id'], 'collection', 'craft_card', -cost, {'card_id': card_id})
+    sync_medals(user['user_id'])
         
     await callback.answer(f"✨ Создано: {c_emoji} {c_name}!", show_alert=True)
     
@@ -327,87 +328,65 @@ async def collection_boxes(callback: CallbackQuery):
     buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="collection_main")])
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
 
+def _open_box(user_id: int, box_id: str) -> str:
+    """Consume a box and grant every reward in one SQLite transaction."""
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        box = conn.execute("SELECT name,type,contents FROM loot_boxes WHERE box_id=?", (box_id,)).fetchone()
+        user = conn.execute("SELECT gold,gems,inventory,level FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if not box or not user:
+            raise ValueError("Бокс не найден!")
+        cur = conn.execute("UPDATE user_boxes SET count=count-1 WHERE user_id=? AND box_id=? AND count>0", (user_id, box_id))
+        if cur.rowcount != 1:
+            raise ValueError("У вас нет этого бокса!")
+        b_name, b_type, raw = box
+        contents = json.loads(raw)
+        inv = json.loads(user[2] or '{}')
+        log = f"🎁 **Открыт {b_name}!**\n\nВы получили:\n"
+        gold, gems = contents.get('gold', 0), contents.get('gems', 0)
+        if gold:
+            log += f"🪙 Золото: {gold}\n"
+        if gems:
+            log += f"💎 Алмазы: {gems}\n"
+        if b_type == 'mats':
+            pool = conn.execute("SELECT item_id,name FROM alchemy_ingredients").fetchall()
+            for mat_id, name in random.choices(pool, k=contents.get('count', 3)):
+                materials = inv.setdefault('materials', {})
+                materials[mat_id] = materials.get(mat_id, 0) + 1
+                log += f"📦 {name} (Ингредиент)\n"
+        elif b_type in ('weapon', 'armor', 'epic_mix', 'leg_mix'):
+            count = contents.get('equip_count', 2) if b_type == 'epic_mix' else contents.get('count', 1)
+            max_level = (user[3] or 1) + 2
+            if b_type in ('epic_mix', 'leg_mix'):
+                pool = conn.execute("SELECT item_id,name,type FROM items WHERE type IN ('weapon','armor') AND CAST(json_extract(stats, '$.req_lvl') AS INTEGER)<=?", (max_level,)).fetchall()
+            else:
+                pool = conn.execute("SELECT item_id,name,type FROM items WHERE type=? AND CAST(json_extract(stats, '$.req_lvl') AS INTEGER)<=?", (b_type, max_level)).fetchall()
+            if pool:
+                for item_id, name, kind in random.choices(pool, k=count):
+                    inv.setdefault('backpack', []).append(item_id)
+                    log += f"{'⚔️' if kind == 'weapon' else '🛡'} {name} (Снаряжение)\n"
+        elif b_type == 'cards':
+            pool = conn.execute("SELECT card_id,name,emoji,rarity_internal FROM cards").fetchall()
+            if pool:
+                for card_id, name, emoji, rarity in random.choices(pool, k=contents.get('count', 3)):
+                    conn.execute("INSERT INTO user_cards (user_id,card_id,count,first_at) VALUES (?,?,1,?) ON CONFLICT(user_id,card_id) DO UPDATE SET count=count+1", (user_id, card_id, time.time()))
+                    log += f"🎴 {emoji} {name} ({rarity})\n"
+        conn.execute("UPDATE users SET gold=gold+?,gems=gems+?,inventory=? WHERE user_id=?", (gold, gems, json.dumps(inv, ensure_ascii=False), user_id))
+        return log
+
+
 @router.callback_query(F.data.startswith("box_open:"))
 async def box_open(callback: CallbackQuery):
-    box_id = callback.data.split(":")[1]
-    user = get_user(callback.from_user.id)
-    user_boxes = get_user_boxes_dict(user['user_id'])
-    
-    if user_boxes.get(box_id, 0) < 1:
-        return await callback.answer("У вас нет этого бокса!", show_alert=True)
-        
-    with get_connection() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT name, type, contents FROM loot_boxes WHERE box_id=?", (box_id,))
-        b_info = cur.fetchone()
-        
-        # Списываем бокс
-        cur.execute("UPDATE user_boxes SET count = count - 1 WHERE user_id=? AND box_id=?", (user['user_id'], box_id))
-        conn.commit()
-        
-    b_name, b_type, b_contents = b_info
-    contents = json.loads(b_contents)
-    
-    inv = user.get('inventory', {})
-    log = f"🎁 **Открыт {b_name}!**\n\nВы получили:\n"
-    
-    if "gold" in contents:
-        user['gold'] += contents['gold']
-        log += f"🪙 Золото: {contents['gold']}\n"
-    if "gems" in contents:
-        user['gems'] = user.get('gems', 0) + contents['gems']
-        log += f"💎 Алмазы: {contents['gems']}\n"
-        
-    if b_type == "mats":
-        with get_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT item_id, name FROM alchemy_ingredients")
-            all_mats = cur.fetchall()
-            drops = random.choices(all_mats, k=contents.get('count', 3))
-            for mat_id, m_name in drops:
-                inv.setdefault('materials', {})[mat_id] = inv.get('materials', {}).get(mat_id, 0) + 1
-                log += f"📦 {m_name} (Ингредиент)\n"
-                
-    elif b_type in ["weapon", "armor", "epic_mix", "leg_mix"]:
-        w_count = contents.get('count', 1) if b_type != "epic_mix" else contents.get('equip_count', 2)
-        with get_connection() as conn:
-            cur = conn.cursor()
-            max_lvl_drop = user.get('level', 1) + 2
-            
-            if b_type == "epic_mix" or b_type == "leg_mix":
-                cur.execute("SELECT item_id, name, type FROM items WHERE type IN ('weapon', 'armor') AND CAST(json_extract(stats, '$.req_lvl') AS INTEGER) <= ?", (max_lvl_drop,))
-            else:
-                cur.execute("SELECT item_id, name, type FROM items WHERE type=? AND CAST(json_extract(stats, '$.req_lvl') AS INTEGER) <= ?", (b_type, max_lvl_drop))
-                
-            pool = cur.fetchall()
-            if pool:
-                drops = random.choices(pool, k=w_count)
-                for i_id, i_name, i_type in drops:
-                    inv.setdefault("backpack", []).append(i_id)
-                    icon = "⚔️" if i_type == "weapon" else "🛡"
-                    log += f"{icon} {i_name} (Снаряжение)\n"
-                    
-    elif b_type == "cards":
-        card_count = contents.get('count', 3)
-        with get_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT card_id, name, emoji, rarity_internal FROM cards")
-            all_cards = cur.fetchall()
-            if all_cards:
-                drops = random.choices(all_cards, k=card_count)
-                for c_id, c_name, c_emoji, c_rarity in drops:
-                    cur.execute("INSERT INTO user_cards (user_id, card_id, count, first_at) VALUES (?, ?, 1, ?) ON CONFLICT(user_id, card_id) DO UPDATE SET count=count+1", (user['user_id'], c_id, time.time()))
-                    log += f"🎴 {c_emoji} {c_name} ({c_rarity})\n"
-                conn.commit()
-    
-    update_user(user['user_id'], gold=user['gold'], gems=user.get('gems', 0), inventory=inv)
-    
-    # ЛОГИРОВАНИЕ ОТКРЫТИЯ
-    log_event(user['user_id'], 'collection', 'open_box', 1, {'box_id': box_id})
-    
+    box_id = callback.data.split(":", 1)[1]
+    user_id = callback.from_user.id
+    try:
+        log = _open_box(user_id, box_id)
+    except ValueError as exc:
+        return await callback.answer(str(exc), show_alert=True)
+    sync_medals(user_id)
+    log_event(user_id, 'collection', 'open_box', 1, {'box_id': box_id})
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📦 Открыть еще один", callback_data="collection_boxes")],
         [InlineKeyboardButton(text="🔙 В альбом", callback_data="collection_main")]
     ])
     await callback.message.edit_text(log, reply_markup=kb, parse_mode="Markdown")
-

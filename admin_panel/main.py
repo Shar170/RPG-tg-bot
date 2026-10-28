@@ -97,6 +97,10 @@ def init_admin_schema():
         except sqlite3.OperationalError: pass
         try: conn.execute("ALTER TABLE war_regions ADD COLUMN room_weights TEXT DEFAULT '{\"combat\": 60, \"puzzle\": 15, \"treasure\": 15, \"empty\": 10}'")
         except sqlite3.OperationalError: pass
+        try: conn.execute("ALTER TABLE war_regions ADD COLUMN cycle INTEGER DEFAULT 0")
+        except sqlite3.OperationalError: pass
+        try: conn.execute("ALTER TABLE war_regions ADD COLUMN reset_at REAL DEFAULT 0")
+        except sqlite3.OperationalError: pass
 
         # Новая таблица соло-данжей
         conn.execute('''CREATE TABLE IF NOT EXISTS solo_dungeons (

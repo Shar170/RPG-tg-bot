@@ -1,4 +1,5 @@
 import asyncio
+from weakref import WeakValueDictionary
 from aiogram import Bot, Dispatcher, BaseMiddleware, F
 from aiogram.types import (
     TelegramObject, Update, CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton,
@@ -7,7 +8,8 @@ from aiogram.types import (
 from config import BOT_TOKEN
 from database import (
     init_db, seed_all, get_user, update_user, check_and_notify_regen,
-    check_inactivity_notifications, mark_user_active, flush_logs, get_user_language,
+    check_inactivity_notifications, mark_user_active, track_daily_visit,
+    flush_logs, get_user_language,
 )
 from i18n import (
     t, set_language, reset_language, DEFAULT_LANG,
@@ -28,6 +30,26 @@ def _inner_event(event: TelegramObject) -> TelegramObject:
         except Exception:
             return event
     return event
+
+
+class UserActionLockMiddleware(BaseMiddleware):
+    """Serialize a player's updates, including duplicate callbacks.
+
+    A single bot process must own polling; this lock does not span processes.
+    """
+    def __init__(self):
+        self._locks = WeakValueDictionary()
+
+    async def __call__(self, handler, event: TelegramObject, data: dict):
+        user = getattr(_inner_event(event), 'from_user', None)
+        if not user:
+            return await handler(event, data)
+        lock = self._locks.get(user.id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[user.id] = lock
+        async with lock:
+            return await handler(event, data)
 
 # Язык текущего update. Должен регистрироваться первым (самый внешний слой).
 class LanguageMiddleware(BaseMiddleware):
@@ -56,6 +78,11 @@ class ActivityMiddleware(BaseMiddleware):
             
         if user_id:
             mark_user_active(user_id)
+            try:
+                track_daily_visit(user_id)
+            except Exception as exc:
+                # Визит не должен ломать обработку update.
+                print(f"Ошибка учёта ежедневного визита: {exc}")
             
         return await handler(event, data)
 
@@ -150,6 +177,7 @@ async def main():
     dp = Dispatcher()
     
     # Регистрируем Middleware. Language — самым внешним слоем.
+    dp.update.outer_middleware(UserActionLockMiddleware())
     dp.update.outer_middleware(LanguageMiddleware())
     dp.update.outer_middleware(ActivityMiddleware())
     dp.message.outer_middleware(AntiCheeseMiddleware())

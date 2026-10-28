@@ -1,4 +1,5 @@
 import random
+import time
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from database import (
@@ -83,6 +84,9 @@ async def start_solo_dungeon(callback: CallbackQuery):
 async def enter_solo_dungeon(callback: CallbackQuery):
     d_id = callback.data.split(":")[1]
     user = get_user(callback.from_user.id)
+    dungeon = get_solo_dungeon(d_id)
+    if not dungeon:
+        return await callback.answer(t("dungeon.error.not_found"), show_alert=True)
     
     e_cfg = get_energy_settings(user.get('level', 1))
     cost = e_cfg["cost_solo"]
@@ -91,10 +95,6 @@ async def enter_solo_dungeon(callback: CallbackQuery):
         return await callback.answer(t("dungeon.error.energy", cost=cost), show_alert=True)
         
     log_event(user['user_id'], 'progression', 'dungeon_start_solo', -cost, {'dungeon_id': d_id, 'currency': 'energy'})
-        
-    dungeon = get_solo_dungeon(d_id)
-    if not dungeon:
-        return await callback.answer(t("dungeon.error.not_found"), show_alert=True)
         
     d_data = generate_dungeon_graph(
         dungeon_type="solo", 
@@ -152,6 +152,12 @@ async def show_war_fronts(callback: CallbackQuery):
         btn_label = t("dungeon.war.fight", name=r['name'], badge=cost_badge) if not r['is_liberated'] else t("dungeon.war.cleared", name=r['name'])
         buttons.append([InlineKeyboardButton(text=btn_label, callback_data=f"war_enter:{r['id']}")])
 
+    if regions and all(r.get('is_liberated') for r in regions):
+        reset_at = max((r.get('reset_at') or 0) for r in regions)
+        if reset_at > 0:
+            minutes = max(1, int((reset_at - time.time()) / 60) + 1)
+            text += t("dungeon.war.reset_pending", minutes=minutes)
+
     buttons.append([InlineKeyboardButton(text=t("dungeon.btn.back"), callback_data="town_dungeon_menu")])
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
 
@@ -185,6 +191,7 @@ async def enter_war_region(callback: CallbackQuery):
         room_weights=region.get('room_weights')
     )
     d_data['war_region_id'] = reg_id
+    d_data['war_cycle'] = region.get('cycle', 0)
     update_user(user['user_id'], state='STATE_DUNGEON', dungeon_data=d_data)
     await enter_node(callback, user, d_data, d_data["current_node"])
 
@@ -193,6 +200,11 @@ async def go_to_node(callback: CallbackQuery):
     target_node = callback.data.replace("dungeon_go_", "")
     user = get_user(callback.from_user.id)
     d_data = user.get('dungeon_data', {})
+    current = (d_data.get('nodes') or {}).get(d_data.get('current_node'), {})
+    if (user.get('state') != 'STATE_DUNGEON' or target_node not in current.get('next', [])
+            or d_data.get('trap_active')
+            or (current.get('type') == 'puzzle' and not current.get('puzzle_solved'))):
+        return await callback.answer(t("dungeon.riddle.stale"), show_alert=True)
     d_data["current_node"] = target_node
     update_user(user['user_id'], dungeon_data=d_data)
     await enter_node(callback, user, d_data, target_node)
@@ -392,9 +404,8 @@ async def enter_node(callback: CallbackQuery, user: dict, d_data: dict, node_id:
 
         buttons = []
         row = []
-        for opt in p_data["options"]:
-            is_correct = (str(opt) == str(p_data["correct"]))
-            cb = "riddle_ans_correct" if is_correct else "riddle_ans_wrong"
+        for index, opt in enumerate(p_data["options"]):
+            cb = f"riddle_ans:{index}"
             row.append(InlineKeyboardButton(text=str(opt), callback_data=cb))
             if len(row) == 2:
                 buttons.append(row)
@@ -545,7 +556,26 @@ async def trap_dodge(callback: CallbackQuery):
         text = t("dungeon.trap.damage", dmg=dmg)
         await callback.message.edit_text(text, reply_markup=get_navigation_kb(d_data), parse_mode="Markdown")
 
-@router.callback_query(F.data == "riddle_ans_correct")
+@router.callback_query(F.data.startswith("riddle_ans:"))
+async def riddle_answer(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
+    d_data = user.get('dungeon_data', {})
+    node = (d_data.get('nodes') or {}).get(d_data.get('current_node'), {})
+    puzzle = node.get('puzzle', {})
+    try:
+        index = int(callback.data.split(':', 1)[1])
+        options = puzzle['options']
+        if index < 0 or index >= len(options):
+            raise ValueError
+    except (ValueError, KeyError, IndexError):
+        return await callback.answer(t("dungeon.riddle.stale"), show_alert=True)
+    if user.get('state') != 'STATE_DUNGEON' or node.get('type') != 'puzzle' or node.get('puzzle_solved'):
+        return await callback.answer(t("dungeon.riddle.stale"), show_alert=True)
+    if str(options[index]) == str(puzzle['correct']):
+        return await riddle_correct(callback)
+    return await riddle_wrong(callback)
+
+
 async def riddle_correct(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     d_data = user.get('dungeon_data', {})
@@ -571,17 +601,17 @@ async def riddle_correct(callback: CallbackQuery):
     text = t("dungeon.riddle.correct", reward=reward)
     await callback.message.edit_text(text, reply_markup=get_navigation_kb(d_data), parse_mode="Markdown")
 
-@router.callback_query(F.data == "riddle_ans_wrong")
 async def riddle_wrong(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     track_stat(user['user_id'], 'riddles_failed', 1)
     d_data = user.get('dungeon_data', {})
+    d_data['nodes'][d_data['current_node']]['puzzle_solved'] = True
     trap_dmg = 15
     user['hp'] = max(1, user['hp'] - trap_dmg)
     
     log_event(user['user_id'], 'dungeon', 'puzzle_fail_damage', -trap_dmg)
     
-    update_user(user['user_id'], hp=user['hp'])
+    update_user(user['user_id'], hp=user['hp'], dungeon_data=d_data)
     text = t("dungeon.riddle.wrong", dmg=trap_dmg)
     await callback.message.edit_text(text, reply_markup=get_navigation_kb(d_data), parse_mode="Markdown")
 

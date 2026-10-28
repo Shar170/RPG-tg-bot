@@ -234,6 +234,18 @@ async def check_pvp_afk(bot, match_id: int, match: dict) -> bool:
         return True
     return False
 
+def _pvp_fight_grade(winner_level: int, loser_level: int) -> str:
+    """Грейд боя по разнице уровней победителя и противника."""
+    diff = int(loser_level or 1) - int(winner_level or 1)
+    if diff >= 20:
+        return "legend"
+    if diff >= 10:
+        return "hard"
+    if diff <= -10:
+        return "easy"
+    return "even"
+
+
 async def end_pvp_match(bot, match_id: int, winner_id: int, loser_id: int, reason_log: str):
     winner = get_user(winner_id)
     loser = get_user(loser_id)
@@ -241,6 +253,9 @@ async def end_pvp_match(bot, match_id: int, winner_id: int, loser_id: int, reaso
     # Бот не платил взнос, поэтому победа над ботом возвращает только свой взнос
     reward = 100 if loser and loser.get('is_bot', 0) == 1 else 200
     winner['gold'] += reward
+
+    grade = _pvp_fight_grade(winner.get('level', 1), (loser or {}).get('level', 1))
+    track_stat(winner_id, f'pvp_wins_{grade}', 1)
     track_stat(winner_id, 'pvp_wins', 1)
     
     if winner.get('is_bot', 0) == 0:

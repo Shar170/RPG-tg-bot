@@ -7,13 +7,13 @@ SOLO_DUNGEONS = [
 ]
 
 WAR_REGIONS = [
-    (1, "🔥 Долина Пепла", "Выжженная земля под властью огненных демонов.", 100000, 0, 0, "fire_lord", json.dumps(["magma_slime", "cultist_fanatic"])),
-    (2, "🌲 Шепчущий Лес", "Оскверненная древняя чаща, полная яда и гнили.", 100000, 0, 0, "decay_treant", json.dumps(["poison_slime", "decay_treant"])),
-    (3, "❄️ Ледяные Пики", "Морозные перевалы, скованные ледяными воинами.", 100000, 0, 0, "arena_berserk", json.dumps(["skeleton_crossbow", "living_idol"])),
-    (4, "🍄 Забытые Болота", "Гиблое место гнездования гигантской паучихи.", 100000, 0, 0, "spider_queen", json.dumps(["poison_slime", "goblin_thief"])),
-    (5, "🌑 Пустоши Бездны", "Разлом мира, откуда вырываются порождения Тьмы.", 100000, 0, 0, "abyss_priest", json.dumps(["cultist_fanatic", "magic_anomaly"])),
-    (6, "⚡ Цитадель Бурь", "Высокогорный бастион с грозовыми големами.", 100000, 0, 0, "golem_blacksmith", json.dumps(["temple_guard", "magic_anomaly"])),
-    (7, "👑 Бастион Королей", "Сердце Камарии, захваченное Костяным Драконом.", 100000, 0, 0, "bone_dragon", json.dumps(["fallen_champion", "skeleton_crossbow"]))
+    (1, "🔥 Долина Пепла", "Выжженная земля под властью огненных демонов.", 1000, 0, 0, "fire_lord", json.dumps(["magma_slime", "cultist_fanatic"])),
+    (2, "🌲 Шепчущий Лес", "Оскверненная древняя чаща, полная яда и гнили.", 1000, 0, 0, "decay_treant", json.dumps(["poison_slime", "decay_treant"])),
+    (3, "❄️ Ледяные Пики", "Морозные перевалы, скованные ледяными воинами.", 1000, 0, 0, "arena_berserk", json.dumps(["skeleton_crossbow", "living_idol"])),
+    (4, "🍄 Забытые Болота", "Гиблое место гнездования гигантской паучихи.", 1000, 0, 0, "spider_queen", json.dumps(["poison_slime", "goblin_thief"])),
+    (5, "🌑 Пустоши Бездны", "Разлом мира, откуда вырываются порождения Тьмы.", 1000, 0, 0, "abyss_priest", json.dumps(["cultist_fanatic", "magic_anomaly"])),
+    (6, "⚡ Цитадель Бурь", "Высокогорный бастион с грозовыми големами.", 1000, 0, 0, "golem_blacksmith", json.dumps(["temple_guard", "magic_anomaly"])),
+    (7, "👑 Бастион Королей", "Сердце Камарии, захваченное Костяным Драконом.", 1000, 0, 0, "bone_dragon", json.dumps(["fallen_champion", "skeleton_crossbow"]))
 ]
 
 DAILY_DUNGEONS = [

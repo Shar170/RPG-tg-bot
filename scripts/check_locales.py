@@ -90,11 +90,12 @@ def main() -> int:
     )
     from data.mobs import BESTIARY
     from data.mob_names import MOB_NAMES_EN
-    from utils.titles import ALL_TITLES, MEDAL_TIERS
+    from utils.titles import ALL_TITLES, MEDAL_TIERS, STATIC_MEDAL_IDS
 
     required = [f"trait.{tid}" for tid in TRAITS]
     required += [f"title.{tid}" for tid in ALL_TITLES]
     required += [f"medal.{tier}" for tier in MEDAL_TIERS]
+    required += [f"medal.{medal_id}" for medal_id in STATIC_MEDAL_IDS]
     for key in required:
         for lang in LANGS:
             if key not in catalogs[lang]:

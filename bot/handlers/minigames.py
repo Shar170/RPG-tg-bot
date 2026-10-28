@@ -300,6 +300,7 @@ async def lock_play(callback: CallbackQuery):
     home['lock_used'] = 0
     home['lock_history'] = ""
     home['lock_input'] = ""
+    home['lock_active'] = True
     update_user(user['user_id'], home_data=home)
     
     await render_lock(callback, user)
@@ -334,6 +335,8 @@ async def lock_input(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     btn = callback.data.split("_")[-1]
     home = user.get('home_data', {})
+    if not home.get('lock_code') or home.get('lock_active') is False:
+        return await callback.answer("Игра уже завершена. Начните новую игру.", show_alert=True)
     
     if btn == "clear":
         home['lock_input'] = ""
@@ -360,6 +363,8 @@ async def lock_input(callback: CallbackQuery):
             cfg = get_minigame_settings()
             mult = 1.0 if used <= 3 else (0.5 if used <= 5 else 0.1)
             reward_text = f"🎉 **СУНДУК ОТКРЫТ!** (Попыток: {used})\nКод был `{secret}`.\n\nВы нашли:\n"
+            home['lock_active'] = False
+            home['lock_input'] = ""
 
             if random.random() < cfg['lock_gem_chance'] and mult > 0.1:
                 gems_won = max(1, int(cfg['lock_gem_amount'] * mult))
@@ -378,6 +383,8 @@ async def lock_input(callback: CallbackQuery):
                 
                 reward_text += f"💰 {gold_won} Золота\n"
 
+            # Закрываем сессию и выдаём валюту до любых ожиданий и доп. наград.
+            update_user(user['user_id'], gold=user['gold'], gems=user.get('gems', 0), home_data=home)
             if used <= 5:
                 mat_id = "epic_token" if used <= 3 else get_random_material_id()
                 give_item(user['user_id'], mat_id, "material", 1)
@@ -390,7 +397,6 @@ async def lock_input(callback: CallbackQuery):
             elif used > 5:
                 reward_text += "*(Награда снижена из-за большого числа попыток)*\n"
 
-            update_user(user['user_id'], gold=user['gold'], gems=user.get('gems', 0))
             track_stat(user['user_id'], 'minigames_won', 1)
             
             await callback.answer()
